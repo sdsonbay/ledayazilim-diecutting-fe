@@ -1,6 +1,7 @@
-name: Deploy dev
+name: Deploy
 
-# main'e her merge: kontroller → web imajı (GHCR) → kube-objects fe/overlays/dev → ArgoCD.
+# main'e her push: kontroller → web imajı (GHCR) → kube-objects fe dev + prod overlay → ArgoCD.
+# Aynı imaj dev'de sha-xxxxxxx, prod'da (diecutting.ledayazilim.com) prod-xxxxxxx tag'iyle çalışır.
 # EXPO_TOKEN tanımlıysa mobil uygulamaya "preview" kanalından OTA güncelleme de gider.
 on:
   push:
@@ -12,7 +13,7 @@ permissions:
   packages: write
 
 concurrency:
-  group: deploy-dev
+  group: deploy
   cancel-in-progress: false
 
 env:
@@ -28,10 +29,13 @@ jobs:
     timeout-minutes: 30
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
+      prod: ${{ steps.meta.outputs.prod }}
     steps:
       - uses: actions/checkout@v4
       - id: meta
-        run: echo "tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "prod=prod-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
@@ -45,7 +49,9 @@ jobs:
           push: true
           tags: |
             ${{ env.IMAGE }}:${{ steps.meta.outputs.tag }}
+            ${{ env.IMAGE }}:${{ steps.meta.outputs.prod }}
             ${{ env.IMAGE }}:dev-latest
+            ${{ env.IMAGE }}:prod-latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
           labels: |
@@ -55,13 +61,23 @@ jobs:
   gitops:
     needs: image
     runs-on: ubuntu-latest
-    environment: development
+    environment: production
     steps:
       - uses: actions/checkout@v4
-      - name: kube-objects dev tag
+      - name: kube-objects dev + prod tag
         env:
+          KUBE_OBJECTS_DEPLOY_KEY: ${{ secrets.KUBE_OBJECTS_DEPLOY_KEY }}
           KUBE_OBJECTS_TOKEN: ${{ secrets.KUBE_OBJECTS_TOKEN }}
-        run: ci/bump-kube-objects-image.sh fe dev "${{ needs.image.outputs.tag }}"
+        run: |
+          ci/bump-kube-objects-image.sh fe dev "${{ needs.image.outputs.tag }}"
+          ci/bump-kube-objects-image.sh fe prod "${{ needs.image.outputs.prod }}"
+      - name: Özet
+        run: |
+          {
+            echo "### Web yayında"
+            echo "- dev → \`${{ needs.image.outputs.tag }}\` (dev-diecutting.ledayazilim.com)"
+            echo "- prod → \`${{ needs.image.outputs.prod }}\` (diecutting.ledayazilim.com)"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   ota-preview:
     needs: check

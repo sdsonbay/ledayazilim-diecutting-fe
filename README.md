@@ -53,18 +53,21 @@ src/i18n/           TR / EN
 | Workflow | Tetik | İş |
 |----------|-------|----|
 | `CI` | PR | typecheck, lint, test, web export |
-| `Deploy dev` | `main` push | imaj → `ghcr.io/sdsonbay/ledayazilim-diecutting-fe:sha-…` → kube-objects `fe/overlays/dev`; `EXPO_TOKEN` varsa `preview` kanalına OTA |
-| `Deploy prod (web)` | **Manuel**, `production` onayı | Dev imajını `prod-…` olarak işaretler → `fe/overlays/prod` |
+| `Deploy` | `main` push | imaj → `ghcr.io/sdsonbay/ledayazilim-diecutting-fe:{sha,prod}-…` → kube-objects `fe/overlays/dev` + `fe/overlays/prod` (`diecutting.ledayazilim.com`); `EXPO_TOKEN` varsa `preview` kanalına OTA |
+| `Prod sürüm seç (geri alma, web)` | **Manuel** | Var olan bir `sha-…` imajını `prod-…` olarak işaretler → `fe/overlays/prod` |
 | `Mobile (EAS)` | **Manuel** | `preview` (dahili) veya `production` derlemesi; istenirse mağazalara gönderim |
 
-**Mobil** — EAS profilleri (`eas.json`): `development` (dev client), `preview` (dev API), `production` (prod API).
+**Mobil** — Expo projesi [`@leda-yazilim-2/leda-diecutting`](https://expo.dev/accounts/leda-yazilim-2/projects/leda-diecutting).
+EAS profilleri (`eas.json`): `development` (dev client), `preview` (dev API), `production` (prod API).
 Bundle id: `com.ledayazilim.diecutting` (+ `.preview` / `.dev`).
+
+**Marka** — `assets/brand/`: işaret (`mark.svg`), yatay logo (açık/koyu), sosyal görsel. Uygulama ikonları `assets/*.png`.
 
 ### Gerekli GitHub ayarları
 
 | Tür | Ad | Açıklama |
 |-----|----|----------|
-| Secret | `KUBE_OBJECTS_TOKEN` | kube-objects reposuna `Contents: write` fine-grained PAT |
-| Secret | `EXPO_TOKEN` | expo.dev → Access tokens (mobil derleme/OTA) |
-| Variable | `EAS_PROJECT_ID` | `npx eas-cli init` sonrası proje kimliği |
-| Environment | `production` | Required reviewers → prod web ve mağaza derlemeleri onaylı |
+| Secret | `KUBE_OBJECTS_DEPLOY_KEY` | kube-objects reposunda yazma yetkili deploy key'in özel anahtarı (alternatif: `KUBE_OBJECTS_TOKEN`) |
+| Secret | `EXPO_TOKEN` | `leda-yazilim-2` hesabındaki `github-actions-leda-diecutting` robotunun token'ı |
+| Variable | `EAS_PROJECT_ID` | `788acf67-f577-43a7-9069-e8bc9f6bb596` (boşsa `app.config.ts` varsayılanı) |
+| Environment | `production` | Prod yayını bu ortamda çalışır; onay istenirse *Required reviewers* eklenebilir |

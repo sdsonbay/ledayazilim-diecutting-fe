@@ -12,12 +12,16 @@ const API: string = ({
   production: 'https://api-diecutting.ledayazilim.com/api/v1',
 } as Record<string, string>)[APP_ENV] ?? 'https://api-diecutting.ledayazilim.com/api/v1'
 
+/** expo.dev/accounts/leda-yazilim-2/projects/leda-diecutting */
+const EAS_PROJECT_ID: string = process.env.EAS_PROJECT_ID || '788acf67-f577-43a7-9069-e8bc9f6bb596'
+
 const suffix = APP_ENV === 'production' ? '' : `.${APP_ENV === 'preview' ? 'preview' : 'dev'}`
 const nameSuffix = APP_ENV === 'production' ? '' : APP_ENV === 'preview' ? ' (Preview)' : ' (Dev)'
 
 export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
   name: `Leda Diecutting${nameSuffix}`,
+  owner: 'leda-yazilim-2',
   slug: 'leda-diecutting',
   scheme: 'ledadiecutting',
   version: '1.0.0',
@@ -75,8 +79,8 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   extra: {
     appEnv: APP_ENV,
     apiUrl: API,
-    eas: { projectId: process.env.EAS_PROJECT_ID },
+    eas: { projectId: EAS_PROJECT_ID },
   },
-  updates: process.env.EAS_PROJECT_ID ? { url: `https://u.expo.dev/${process.env.EAS_PROJECT_ID}` } : undefined,
+  updates: { url: `https://u.expo.dev/${EAS_PROJECT_ID}` },
   runtimeVersion: { policy: 'appVersion' },
 })
