@@ -1,0 +1,55 @@
+name: Mobile (EAS)
+
+# Manuel mobil derleme / mağaza gönderimi.
+#   preview    → dahili dağıtım (TestFlight öncesi / APK), dev API
+#   production → mağaza derlemesi, prod API; "submit" seçilirse App Store Connect + Google Play'e gönderilir
+#                (production environment onayı gerekir)
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Derleme profili
+        type: choice
+        options: [preview, production]
+        default: preview
+      platform:
+        description: Platform
+        type: choice
+        options: [all, ios, android]
+        default: all
+      submit:
+        description: Mağazalara gönder (yalnız production)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ inputs.profile == 'production' && 'production' || 'development' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+      - run: npm ci
+      - name: EAS Build
+        run: |
+          args=(--profile "$PROFILE" --platform "$PLATFORM" --non-interactive --no-wait)
+          if [ "$PROFILE" = "production" ] && [ "$SUBMIT" = "true" ]; then
+            args+=(--auto-submit)
+          fi
+          eas build "${args[@]}"
+        env:
+          PROFILE: ${{ inputs.profile }}
+          PLATFORM: ${{ inputs.platform }}
+          SUBMIT: ${{ inputs.submit }}
+          EAS_PROJECT_ID: ${{ vars.EAS_PROJECT_ID }}

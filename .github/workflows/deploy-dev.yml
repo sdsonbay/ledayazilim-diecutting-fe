@@ -1,0 +1,93 @@
+name: Deploy dev
+
+# main'e her merge: kontroller → web imajı (GHCR) → kube-objects fe/overlays/dev → ArgoCD.
+# EXPO_TOKEN tanımlıysa mobil uygulamaya "preview" kanalından OTA güncelleme de gider.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  check:
+    uses: ./.github/workflows/ci.yml
+
+  image:
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: meta
+        run: echo "tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.meta.outputs.tag }}
+            ${{ env.IMAGE }}:dev-latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+  gitops:
+    needs: image
+    runs-on: ubuntu-latest
+    environment: development
+    steps:
+      - uses: actions/checkout@v4
+      - name: kube-objects dev tag
+        env:
+          KUBE_OBJECTS_TOKEN: ${{ secrets.KUBE_OBJECTS_TOKEN }}
+        run: ci/bump-kube-objects-image.sh fe dev "${{ needs.image.outputs.tag }}"
+
+  ota-preview:
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        if: env.EXPO_TOKEN != ''
+      - uses: actions/setup-node@v4
+        if: env.EXPO_TOKEN != ''
+        with:
+          node-version: 22
+          cache: npm
+      - uses: expo/expo-github-action@v8
+        if: env.EXPO_TOKEN != ''
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+      - if: env.EXPO_TOKEN != ''
+        run: npm ci
+      - name: EAS Update (preview)
+        if: env.EXPO_TOKEN != ''
+        run: eas update --channel preview --environment preview --message "${COMMIT_MESSAGE:0:200}" --non-interactive
+        env:
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message || github.sha }}
+          APP_ENV: preview
+          EAS_PROJECT_ID: ${{ vars.EAS_PROJECT_ID }}
