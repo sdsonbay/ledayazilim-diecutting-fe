@@ -61,7 +61,7 @@
     "build:web": "expo export --platform web",
     "typecheck": "tsc --noEmit",
     "lint": "expo lint",
-    "test": "node --test --experimental-strip-types src/**/*.test.ts"
+    "test": "node --test --experimental-strip-types \"src/**/*.test.ts\""
   },
   "private": true
 }

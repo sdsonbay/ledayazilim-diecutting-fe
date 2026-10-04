@@ -2,6 +2,7 @@ import { memo, useState } from 'react'
 import { StyleSheet, TextInput, View } from 'react-native'
 import { useI18n } from '../../i18n/LocaleContext'
 import type { ParamDef } from '../../lib/types'
+import { useUnit } from '../../lib/units'
 import { useTheme } from '../../theme/ThemeContext'
 import { fonts, radius } from '../../theme/tokens'
 import { Chip, Icon, ScalePressable, Segmented, Slider, Text, Toggle } from '../ui'
@@ -70,25 +71,33 @@ export const ParamField = memo(function ParamField({
 const NumberField = ({ def, value, onChange }: { def: ParamDef; value: number; onChange: (key: string, value: ParamValue) => void }) => {
   const { colors } = useTheme()
   const { label } = useI18n()
+  const units = useUnit()
+  const isLength = def.unit === 'mm'
+  // Gösterim dönüşümü: motor mm bekler; inç seçiliyse alan inç gösterir/alır.
+  const show = (mm: number) => (isLength ? Number(units.toDisplay(mm).toFixed(units.unit === 'in' ? 3 : 2)) : mm)
   const step = def.step ?? 0.5
   const min = def.min ?? 0
   const max = def.max ?? Math.max(1000, value * 4)
   // Düzenlenirken yazılan metin; aksi halde değer gösterilir (effect ile senkron tutmaya gerek yok).
   const [draft, setDraft] = useState<string | null>(null)
   const [focused, setFocused] = useState(false)
-  const text = draft ?? String(value)
+  const text = draft ?? String(show(value))
   const setText = (next: string) => setDraft(next)
   // Kaydırıcı çok geniş aralıkta işe yaramaz; mantıklı bir pencere seç.
   const sliderMax = Math.min(max, Math.max(min + step * 20, def.autoWhenZero ? max : Math.max(Number(def.default) * 3, value * 1.5)))
 
   const commit = (raw: string) => {
-    const n = Number(raw.replace(',', '.'))
+    const typed = Number(raw.replace(',', '.'))
     setDraft(null)
-    if (!Number.isFinite(n)) return
+    if (!Number.isFinite(typed)) return
+    const n = isLength ? units.fromDisplay(typed) : typed
     onChange(def.key, round(Math.min(max, Math.max(min, n)), step))
   }
 
-  const nudge = (dir: 1 | -1) => commit(String(round(value + dir * step * (step < 1 ? 2 : 1), step)))
+  const nudge = (dir: 1 | -1) => {
+    const delta = isLength && units.unit === 'in' ? 1.27 : step * (step < 1 ? 2 : 1)
+    onChange(def.key, round(Math.min(max, Math.max(min, value + dir * delta)), step))
+  }
 
   return (
     <View style={styles.field}>
@@ -117,7 +126,7 @@ const NumberField = ({ def, value, onChange }: { def: ParamDef; value: number; o
           />
           {def.unit ? (
             <Text variant="small" tone="muted" style={{ marginRight: 2 }}>
-              {def.unit}
+              {isLength ? units.label : def.unit}
             </Text>
           ) : null}
           <ScalePressable accessibilityRole="button" accessibilityLabel="+" onPress={() => nudge(1)} hitSlop={6} scaleTo={0.85} style={styles.step}>
@@ -130,7 +139,7 @@ const NumberField = ({ def, value, onChange }: { def: ParamDef; value: number; o
         min={min}
         max={sliderMax}
         step={step}
-        onChange={(v) => setDraft(String(v))}
+        onChange={(v) => setDraft(String(show(v)))}
         onCommit={(v) => {
           setDraft(null)
           onChange(def.key, v)

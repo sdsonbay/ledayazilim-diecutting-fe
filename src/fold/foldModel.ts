@@ -1,6 +1,9 @@
 import * as THREE from 'three'
-import type { DielineResponse, Panel, Point } from '../lib/types'
+import type { DielineResponse, Panel } from '../lib/types'
+import { jointProgress, pivotOf, planFold, type FoldStep, type PlanJoint } from './foldPlan'
 import { buildPanelMeshBuffers, type MaterialGroup, type PanelBounds, type PanelSurface } from './panelGeometry'
+
+export type { FoldStep }
 
 export type { MaterialGroup, PanelBounds, PanelSurface }
 
@@ -39,6 +42,9 @@ export interface FoldJoint {
   axis: [number, number, number]
   angle: number
   childShift: [number, number, number]
+  /** Montaj sırasındaki zaman penceresi (genel katlanma 0..1 içinde). */
+  start: number
+  end: number
   node: FoldNode
 }
 
@@ -47,81 +53,13 @@ export interface FoldNode {
   joints: FoldJoint[]
 }
 
-const toV = (p: Point): THREE.Vector3 => new THREE.Vector3(p.x, 0, -p.y)
-
-const centroid2d = (pts: Point[]): Point => {
-  let x = 0
-  let y = 0
-  for (const p of pts) {
-    x += p.x
-    y += p.y
-  }
-  const n = Math.max(pts.length, 1)
-  return { x: x / n, y: y / n }
-}
-
-const signedFoldAngle = (axis: [Point, Point], childOutline: Point[], angle: number): number => {
-  const mag = Math.abs(angle)
-  if (mag < 1e-6) return 0
-  const [a, b] = axis
-  const dx = b.x - a.x
-  const dy = b.y - a.y
-  const len = Math.hypot(dx, dy)
-  if (len < 1e-8) return angle
-  const c = centroid2d(childOutline)
-  const cross = dx * (c.y - a.y) - dy * (c.x - a.x)
-  if (Math.abs(cross) < len * 0.15) return angle
-  return cross < 0 ? mag : -mag
-}
-
-const hingeTowardChild = (
-  origin: THREE.Vector3,
-  axis: THREE.Vector3,
-  childOutline: Point[],
-  dist: number,
-): THREE.Vector3 => {
-  if (dist <= 0 || childOutline.length < 1) return origin.clone()
-  const c = centroid2d(childOutline)
-  const toChild = toV(c).sub(origin)
-  const along = axis.clone().multiplyScalar(toChild.dot(axis))
-  const perp = toChild.sub(along)
-  if (perp.lengthSq() < 1e-8) return origin.clone()
-  return origin.clone().add(perp.normalize().multiplyScalar(dist))
-}
-
-const closedFoldAngle = (role: string, angle: number): number => {
-  const mag = Math.abs(angle)
-  if (mag < 1e-6) return 0
-  const sign = angle < 0 ? -1 : 1
-  if (mag > 120) return sign * Math.min(mag, 178)
-  if (role === 'lock') return sign * Math.min(mag, 88)
-  return sign * mag
-}
-
-const stackLift = (role: string, layer: number, thickness: number): number => {
-  const step = thickness * 0.16
-  switch (role) {
-    case 'glue':
-      return -thickness * 1.05 - layer * step
-    case 'dust':
-      return thickness * 0.7 + layer * step
-    case 'flap':
-    case 'lid':
-      return thickness * 1.15 + layer * step
-    case 'lock':
-      return thickness * 1.7 + layer * step
-    default:
-      return layer * thickness * 0.03
-  }
-}
-
-const panelMeshData = (panel: Panel, thickness: number, layer: number): FoldMeshData | null => {
+const panelMeshData = (panel: Panel, thickness: number): FoldMeshData | null => {
   const buffers = buildPanelMeshBuffers(panel, thickness)
   if (!buffers) return null
   return {
     id: panel.id,
     printable: panel.printable,
-    lift: stackLift(panel.role, layer, thickness),
+    lift: 0,
     positions: buffers.positions,
     normals: buffers.normals,
     uvs: buffers.uvs,
@@ -135,53 +73,35 @@ const panelMeshData = (panel: Panel, thickness: number, layer: number): FoldMesh
 export const foldThickness = (dieline: DielineResponse): number =>
   Math.min(8, Math.max(0.6, dieline.meta.caliper || 0.4))
 
-export function buildFoldGraph(dieline: DielineResponse): { root: FoldNode; thickness: number } {
+export function buildFoldGraph(dieline: DielineResponse): { root: FoldNode; thickness: number; steps: FoldStep[]; residual: number } {
   const thickness = foldThickness(dieline)
+  const plan = planFold(dieline, thickness)
   const panels = new Map(dieline.panels.map((p) => [p.id, p]))
-  const children = new Map<string, typeof dieline.folds>()
-  for (const fold of dieline.folds) {
-    const list = children.get(fold.parent) ?? []
-    list.push(fold)
-    children.set(fold.parent, list)
+  const jointsOf = new Map<string, PlanJoint[]>()
+  for (const j of plan.joints) {
+    const list = jointsOf.get(j.parentId) ?? []
+    list.push(j)
+    jointsOf.set(j.parentId, list)
   }
-  let layer = 0
   const attach = (panelId: string, seen: Set<string>): FoldNode => {
     const node: FoldNode = { meshes: [], joints: [] }
     if (seen.has(panelId)) return node
     seen.add(panelId)
     const panel = panels.get(panelId)
     if (!panel) return node
-    layer += 1
-    const mesh = panelMeshData(panel, thickness, layer)
+    const mesh = panelMeshData(panel, thickness)
     if (mesh) node.meshes.push(mesh)
-    for (const fold of children.get(panelId) ?? []) {
-      const childPanel = panels.get(fold.child)
-      const [a, b] = fold.axis
-      const axis = toV(b).sub(toV(a))
-      if (axis.lengthSq() < 1e-8) {
-        node.joints.push({
-          id: fold.id,
-          hinge: [0, thickness * 0.5, 0],
-          axis: [0, 1, 0],
-          angle: 0,
-          childShift: [0, -thickness * 0.5, 0],
-          node: attach(fold.child, seen),
-        })
-        continue
-      }
-      axis.normalize()
-      const hinge = hingeTowardChild(toV(a), axis, childPanel?.outline ?? [], thickness * 0.18)
-      const oriented = childPanel?.outline?.length
-        ? signedFoldAngle(fold.axis, childPanel.outline, fold.angle)
-        : fold.angle
-      const rawAngle = fold.reverse ? -oriented : oriented
+    for (const j of jointsOf.get(panelId) ?? []) {
+      const p = pivotOf(j, thickness)
       node.joints.push({
-        id: fold.id,
-        hinge: [hinge.x, thickness * 0.5, hinge.z],
-        axis: [axis.x, axis.y, axis.z],
-        angle: closedFoldAngle(childPanel?.role ?? 'wall', rawAngle),
-        childShift: [-hinge.x, -thickness * 0.5, -hinge.z],
-        node: attach(fold.child, seen),
+        id: j.id,
+        hinge: [p.x, p.y, p.z],
+        axis: [j.axis.x, j.axis.y, j.axis.z],
+        angle: j.angle,
+        childShift: [-p.x, -p.y, -p.z],
+        start: j.start,
+        end: j.end,
+        node: attach(j.childId, seen),
       })
     }
     return node
@@ -194,7 +114,7 @@ export function buildFoldGraph(dieline: DielineResponse): { root: FoldNode; thic
     root.meshes.push(...extra.meshes)
     root.joints.push(...extra.joints)
   }
-  return { root, thickness }
+  return { root, thickness, steps: plan.steps, residual: plan.residual }
 }
 
 export const kraftColor = (printable: boolean): [number, number, number] =>
@@ -252,7 +172,10 @@ const walkBake = (node: FoldNode, parent: THREE.Matrix4, t: number, out: BakedFo
     }
   }
   for (const joint of node.joints) {
-    const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(...joint.axis), THREE.MathUtils.degToRad(-joint.angle * t))
+    const q = new THREE.Quaternion().setFromAxisAngle(
+      new THREE.Vector3(...joint.axis),
+      THREE.MathUtils.degToRad(-joint.angle * jointProgress(joint, t)),
+    )
     const pivot = new THREE.Matrix4().compose(
       new THREE.Vector3(...joint.hinge),
       q,
@@ -352,4 +275,90 @@ export const groupIndexForSurface = (surface: PanelSurface): number => {
   if (surface === 'outer') return 0
   if (surface === 'inner') return 1
   return 2
+}
+
+export interface FoldLayout {
+  /** Modeli dik/zemine oturtan dönüş. */
+  quaternion: [number, number, number, number]
+  /** Dönüşten sonra uygulanan öteleme: kapalı kutu zemin (y=0) üzerinde, merkezde. */
+  offset: [number, number, number]
+  /** Açık + kapalı pozu kapsayan çerçeve. */
+  frame: FoldFrame
+  /** Düz ve kapalı pozların ayrı çerçeveleri: kamera katlanmayla birlikte yaklaşır. */
+  openFrame: FoldFrame
+  closedFrame: FoldFrame
+  /** Katlanma boyunca (eşit aralıklı örnekler) kutuyu zeminde tutan dikey düzeltme. */
+  rest: number[]
+}
+
+/** Katlanma t'sinde zemine oturma payı (örnekler arası doğrusal). */
+export const restAt = (rest: number[], t: number): number => {
+  if (rest.length === 0) return 0
+  const x = Math.min(1, Math.max(0, t)) * (rest.length - 1)
+  const i = Math.floor(x)
+  const a = rest[i] ?? 0
+  const b = rest[Math.min(rest.length - 1, i + 1)] ?? a
+  return a + (b - a) * (x - i)
+}
+
+/**
+ * Sunum yönü: duvar kökenli kutular (tuck end, koli) dik durur, ön yüz kameraya bakar;
+ * taban kökenli olanlar (tepsi) tabanı zeminde açılır.
+ */
+export const layoutFold = (root: FoldNode, rootRole: string, thickness: number): FoldLayout => {
+  const closed = bakeFoldMeshes(root, 1)
+  let sum = 0
+  let count = 0
+  for (const part of closed) {
+    for (let i = 1; i < part.positions.length; i += 3) {
+      sum += part.positions[i] ?? 0
+      count += 1
+    }
+  }
+  const bodyBelow = count > 0 ? sum / count < thickness / 2 : true
+  const q = new THREE.Quaternion()
+  if (rootRole === 'bottom') {
+    if (bodyBelow) q.setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI)
+  } else {
+    q.setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2)
+    if (!bodyBelow) q.premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI))
+  }
+  const v = new THREE.Vector3()
+  const box = (parts: BakedFoldMesh[]) => {
+    const b = new THREE.Box3()
+    for (const part of parts) {
+      for (let i = 0; i < part.positions.length; i += 3) {
+        v.set(part.positions[i] ?? 0, part.positions[i + 1] ?? 0, part.positions[i + 2] ?? 0).applyQuaternion(q)
+        b.expandByPoint(v)
+      }
+    }
+    return b
+  }
+  const closedBox = box(closed)
+  const openBox = box(bakeFoldMeshes(root, 0))
+  const offset = new THREE.Vector3(
+    -(closedBox.min.x + closedBox.max.x) / 2,
+    -closedBox.min.y,
+    -(closedBox.min.z + closedBox.max.z) / 2,
+  )
+  const frameOf = (b: THREE.Box3): FoldFrame => {
+    const moved = b.clone().translate(offset)
+    const size = moved.getSize(new THREE.Vector3())
+    const c = moved.getCenter(new THREE.Vector3())
+    return { center: [c.x, c.y, c.z], span: Math.max(size.x, size.y, size.z, 30) }
+  }
+  // Montaj masada yapılıyormuş gibi: her an en alt nokta zeminde.
+  const rest: number[] = []
+  for (let i = 0; i <= 24; i += 1) {
+    const b = box(bakeFoldMeshes(root, i / 24))
+    rest.push(-(b.min.y + offset.y))
+  }
+  return {
+    rest,
+    quaternion: [q.x, q.y, q.z, q.w],
+    offset: [offset.x, offset.y, offset.z],
+    frame: frameOf(closedBox.clone().union(openBox)),
+    openFrame: frameOf(openBox),
+    closedFrame: frameOf(closedBox),
+  }
 }

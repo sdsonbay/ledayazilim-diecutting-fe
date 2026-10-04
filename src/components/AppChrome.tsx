@@ -21,9 +21,9 @@ export interface TabDef {
 }
 
 export const TABS: TabDef[] = [
-  { name: 'index', href: '/', path: '/', label: 'tab.catalog', icon: 'grid' },
+  { name: 'index', href: '/', path: '/', label: 'tab.home', icon: 'home' },
+  { name: 'catalog', href: '/catalog', path: '/catalog', label: 'tab.catalog', icon: 'grid' },
   { name: 'studio', href: '/studio', path: '/studio', label: 'tab.studio', icon: 'pen-tool' },
-  { name: 'import', href: '/import', path: '/import', label: 'tab.import', icon: 'upload' },
   { name: 'designs', href: '/designs', path: '/designs', label: 'tab.designs', icon: 'bookmark' },
   { name: 'account', href: '/account', path: '/account', label: 'tab.account', icon: 'user' },
 ]

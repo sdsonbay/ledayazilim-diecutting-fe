@@ -1,5 +1,5 @@
 import { router } from 'expo-router'
-import { useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { ActivityIndicator, Platform, StyleSheet, View } from 'react-native'
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated'
 import { useAuth } from '../../auth/AuthContext'
@@ -10,8 +10,15 @@ import { useTheme } from '../../theme/ThemeContext'
 import { radius } from '../../theme/tokens'
 import { DielineCanvas, DielineLegend } from '../dieline/DielineCanvas'
 import { ImposeSheet } from '../dieline/ImposeSheet'
-import { FoldView } from '../fold/FoldView'
-import { Button, IconButton, Segmented, Slider, Text } from '../ui'
+import { exportFoldGlb } from '../../fold/exportGlb'
+import type { Substrate } from '../../fold/foldMaterials'
+import type { FoldStep } from '../../fold/foldModel'
+import { saveFile } from '../../lib/saveFile'
+import { useUnit } from '../../lib/units'
+import { shareImage } from '../../lib/shareImage'
+import { FoldControls } from '../fold/FoldControls'
+import { FoldView, type FoldCapture } from '../fold/FoldView'
+import { Button, Icon, ScalePressable, Segmented, Text, useFeedback } from '../ui'
 
 export type StageMode = '2d' | '3d' | 'impose'
 
@@ -28,15 +35,53 @@ export interface StageProps {
   /** Sahneyi çevreleyen kartın stili (yükseklik vb.). */
   style?: object
   empty?: React.ReactNode
+  /** 3D'de başlangıç malzemesi (oluklu şablonlar için oluklu mukavva). */
+  defaultSubstrate?: Substrate
 }
 
 /** Bıçak izi sahnesi: 2D / 3D / tabaka; üstte mod ve indirme, altta ölçüler ve katlama. */
-export const Stage = ({ dieline, mode, onMode, busy, printUri, printTransform, printFinish, impose, onExport, style, empty }: StageProps) => {
+export const Stage = ({ dieline, mode, onMode, busy, printUri, printTransform, printFinish, impose, onExport, style, empty, defaultSubstrate = 'white' }: StageProps) => {
   const { colors } = useTheme()
   const { t } = useI18n()
   const { loggedIn } = useAuth()
-  const [fold, setFold] = useState(0.85)
+  const { toast } = useFeedback()
+  const units = useUnit()
+  const [showDims, setShowDims] = useState(true)
+  const [fold, setFold] = useState(1)
+  const [speed, setSpeed] = useState(0.24)
+  const [progress, setProgress] = useState(0)
+  const [steps, setSteps] = useState<FoldStep[]>([])
+  const [substrate, setSubstrate] = useState<Substrate>(defaultSubstrate)
   const [light, setLight] = useState(1.1)
+  const capture = useRef<FoldCapture | null>(null)
+  const onSteps = useCallback((next: FoldStep[]) => setSteps(next), [])
+  const onProgress = useCallback((v: number) => setProgress(v), [])
+  const playing = speed < 1 && Math.abs(fold - progress) > 0.002
+
+  const play = (target: number) => {
+    setSpeed(0.24)
+    setFold(target)
+  }
+  const scrub = (v: number) => {
+    setSpeed(6)
+    setFold(v)
+  }
+  const snapshot = async () => {
+    const uri = await capture.current?.()
+    if (!uri || !dieline) return
+    await shareImage(uri, `${dieline.templateId}-3d.png`)
+    toast(t('fold.snapshotDone'), 'success')
+  }
+  const glb = async () => {
+    if (!dieline) return
+    try {
+      const bytes = await exportFoldGlb(dieline, substrate, 1)
+      await saveFile(bytes, `${dieline.templateId}.glb`, 'model/gltf-binary')
+      toast(t('fold.glbDone'), 'success')
+    } catch {
+      toast(t('editor.exportFail'), 'error')
+    }
+  }
 
   const showFold = mode === '3d' && loggedIn && dieline
   const stats = dieline?.stats
@@ -68,7 +113,7 @@ export const Stage = ({ dieline, mode, onMode, busy, printUri, printTransform, p
           )
         ) : mode === '2d' ? (
           <Animated.View key="2d" entering={FadeIn.duration(220)} exiting={FadeOut.duration(120)} style={StyleSheet.absoluteFill}>
-            <DielineCanvas dieline={dieline} printUri={printUri} printTransform={printTransform} />
+            <DielineCanvas dieline={dieline} printUri={printUri} printTransform={printTransform} formatLength={showDims ? units.format : undefined} />
           </Animated.View>
         ) : mode === '3d' ? (
           showFold ? (
@@ -76,6 +121,11 @@ export const Stage = ({ dieline, mode, onMode, busy, printUri, printTransform, p
               <FoldView
                 dieline={dieline}
                 fold={fold}
+                speed={speed}
+                substrate={substrate}
+                onSteps={onSteps}
+                onProgress={onProgress}
+                captureRef={capture}
                 light={light}
                 background={colors.scene}
                 printUri={printUri}
@@ -120,22 +170,21 @@ export const Stage = ({ dieline, mode, onMode, busy, printUri, printTransform, p
 
       <View style={[styles.footer, { borderColor: colors.line }]}>
         {showFold ? (
-          <View style={styles.foldRow}>
-            <IconButton
-              icon={fold > 0.5 ? 'maximize-2' : 'minimize-2'}
-              label={fold > 0.5 ? t('editor.foldOpen') : t('editor.foldPlay')}
-              onPress={() => setFold(fold > 0.5 ? 0 : 1)}
-              size={34}
-            />
-            <View style={{ flex: 1 }}>
-              <Slider value={fold} min={0} max={1} step={0.01} onChange={setFold} accessibilityLabel={t('editor.fold')} />
-            </View>
-            {Platform.OS === 'web' ? (
-              <View style={{ width: 110 }}>
-                <Slider value={light} min={0.35} max={1.6} step={0.01} onChange={setLight} accessibilityLabel={t('editor.light')} />
-              </View>
-            ) : null}
-          </View>
+          <FoldControls
+            steps={steps}
+            progress={progress}
+            playing={playing}
+            onPlay={() => play(playing ? progress : 1)}
+            onOpen={() => play(0)}
+            onScrub={scrub}
+            onStep={(i) => play(steps[i]?.end ?? 1)}
+            substrate={substrate}
+            onSubstrate={setSubstrate}
+            light={light}
+            onLight={setLight}
+            onSnapshot={() => void snapshot()}
+            onGlb={Platform.OS === 'web' ? () => void glb() : undefined}
+          />
         ) : mode === 'impose' && impose.result ? (
           <View style={styles.stats}>
             <Stat label={`${impose.result.layout.cols}×${impose.result.layout.rows}${impose.result.layout.mixedCopies ? `+${impose.result.layout.mixedCopies}` : ''}`} />
@@ -144,10 +193,18 @@ export const Stage = ({ dieline, mode, onMode, busy, printUri, printTransform, p
           </View>
         ) : stats ? (
           <View style={styles.stats}>
-            <Stat label={t('editor.flatSize', { w: stats.flatWidth.toFixed(1), h: stats.flatHeight.toFixed(1) })} />
-            <Stat label={t('editor.cut', { n: stats.cutLength.toFixed(0) })} />
-            <Stat label={t('editor.crease', { n: stats.creaseLength.toFixed(0) })} />
+            <Stat label={`${t('editor.flatLabel')} ${units.toDisplay(stats.flatWidth).toFixed(units.unit === 'in' ? 2 : 1)} × ${units.format(stats.flatHeight)}`} />
+            <Stat label={`${t('editor.legendCut')} ${units.format(stats.cutLength, 0)}`} />
+            <Stat label={`${t('editor.legendCrease')} ${units.format(stats.creaseLength, 0)}`} />
             {mode === '2d' ? <DielineLegend labels={{ cut: t('editor.legendCut'), crease: t('editor.legendCrease') }} /> : null}
+            {mode === '2d' ? (
+              <ScalePressable accessibilityRole="switch" accessibilityState={{ checked: showDims }} onPress={() => setShowDims((v) => !v)} style={styles.dimToggle}>
+                <Icon name="maximize-2" size={13} color={showDims ? colors.accent : colors.muted} />
+                <Text variant="smallStrong" color={showDims ? colors.accent : colors.muted}>
+                  {t('editor.dims')}
+                </Text>
+              </ScalePressable>
+            ) : null}
           </View>
         ) : null}
       </View>
@@ -179,6 +236,6 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
   },
   footer: { borderTopWidth: StyleSheet.hairlineWidth * 2, paddingHorizontal: 14, paddingVertical: 10, minHeight: 48, justifyContent: 'center' },
-  foldRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   stats: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', columnGap: 16, rowGap: 6 },
+  dimToggle: { flexDirection: 'row', alignItems: 'center', gap: 4, marginLeft: 'auto' },
 })

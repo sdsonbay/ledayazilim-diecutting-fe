@@ -5,19 +5,20 @@ import { Inter_500Medium } from '@expo-google-fonts/inter/500Medium'
 import { Inter_600SemiBold } from '@expo-google-fonts/inter/600SemiBold'
 import { Inter_700Bold } from '@expo-google-fonts/inter/700Bold'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { Stack } from 'expo-router'
+import { Stack, router, type ErrorBoundaryProps } from 'expo-router'
 import { useFonts } from 'expo-font'
 import * as SplashScreen from 'expo-splash-screen'
 import { StatusBar } from 'expo-status-bar'
 import * as SystemUI from 'expo-system-ui'
 import { useEffect, useState } from 'react'
-import { Platform } from 'react-native'
+import { Platform, View } from 'react-native'
 import { GestureHandlerRootView } from 'react-native-gesture-handler'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
 import { AuthProvider } from '../auth/AuthContext'
-import { FeedbackProvider } from '../components/ui'
-import { LocaleProvider } from '../i18n/LocaleContext'
+import { Button, EmptyState, FeedbackProvider } from '../components/ui'
+import { LocaleProvider, useI18n } from '../i18n/LocaleContext'
 import { hydrateStorage } from '../lib/storage'
+import { UnitProvider } from '../lib/units'
 import { ThemeProvider, useTheme } from '../theme/ThemeContext'
 
 void SplashScreen.preventAutoHideAsync().catch(() => undefined)
@@ -64,11 +65,13 @@ export default function RootLayout() {
         <QueryClientProvider client={queryClient}>
           <ThemeProvider>
             <LocaleProvider>
-              <AuthProvider>
-                <FeedbackProvider>
-                  <AppStack />
-                </FeedbackProvider>
-              </AuthProvider>
+              <UnitProvider>
+                <AuthProvider>
+                  <FeedbackProvider>
+                    <AppStack />
+                  </FeedbackProvider>
+                </AuthProvider>
+              </UnitProvider>
             </LocaleProvider>
           </ThemeProvider>
         </QueryClientProvider>
@@ -105,5 +108,36 @@ function AppStack() {
         <Stack.Screen name="credits" options={{ presentation: 'modal', animation: 'slide_from_bottom' }} />
       </Stack>
     </>
+  )
+}
+
+/** Ekran düzeyi hata yakalayıcı (Expo Router): beyaz ekran yerine kurtarma seçenekleri. */
+export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
+  return (
+    <ThemeProvider>
+      <LocaleProvider>
+        <ErrorScreen message={error.message} retry={retry} />
+      </LocaleProvider>
+    </ThemeProvider>
+  )
+}
+
+function ErrorScreen({ message, retry }: { message: string; retry: () => Promise<void> }) {
+  const { colors } = useTheme()
+  const { t } = useI18n()
+  return (
+    <View style={{ flex: 1, backgroundColor: colors.bg, justifyContent: 'center', padding: 24 }}>
+      <EmptyState
+        icon="alert-octagon"
+        title={t('error.screenTitle')}
+        body={`${t('error.screenBody')}${__DEV__ ? `\n\n${message}` : ''}`}
+        action={
+          <View style={{ flexDirection: 'row', gap: 10 }}>
+            <Button label={t('common.retry')} icon="refresh-cw" onPress={() => void retry()} />
+            <Button label={t('tab.home')} variant="outline" onPress={() => router.replace('/')} />
+          </View>
+        }
+      />
+    </View>
   )
 }

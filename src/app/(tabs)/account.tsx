@@ -11,6 +11,7 @@ import { apiErrorMessage } from '../../i18n/errors'
 import { useI18n } from '../../i18n/LocaleContext'
 import { api, type ApiKeyCreated } from '../../lib/api'
 import { APP_ENV } from '../../lib/config'
+import { useUnit } from '../../lib/units'
 import { useTheme, type ThemePreference } from '../../theme/ThemeContext'
 import { fonts, radius } from '../../theme/tokens'
 
@@ -22,6 +23,7 @@ export default function AccountScreen() {
   const queryClient = useQueryClient()
   const [created, setCreated] = useState<ApiKeyCreated | null>(null)
   const user = session?.user
+  const units = useUnit()
 
   const key = useQuery({ queryKey: ['me', 'key', user?.id], queryFn: api.apiKey, enabled: loggedIn })
   const regen = useMutation({
@@ -111,6 +113,19 @@ export default function AccountScreen() {
                 { value: 'system', label: t('account.themeSystem'), icon: 'smartphone' },
                 { value: 'light', label: t('account.themeLight'), icon: 'sun' },
                 { value: 'dark', label: t('account.themeDark'), icon: 'moon' },
+              ]}
+            />
+          </View>
+          <View style={{ gap: 8 }}>
+            <Text variant="smallStrong" tone="soft">
+              {t('editor.unit')}
+            </Text>
+            <Segmented
+              value={units.unit}
+              onChange={units.setUnit}
+              options={[
+                { value: 'mm', label: t('account.unitMm') },
+                { value: 'in', label: t('account.unitIn') },
               ]}
             />
           </View>

@@ -76,7 +76,7 @@ export default function DesignsScreen() {
           icon="bookmark"
           title={t('designs.empty')}
           body={t('designs.emptyBody')}
-          action={<Button label={t('designs.browse')} icon="grid" onPress={() => router.navigate('/')} />}
+          action={<Button label={t('designs.browse')} icon="grid" onPress={() => router.navigate('/catalog')} />}
         />
       ) : (
         <View style={styles.grid}>

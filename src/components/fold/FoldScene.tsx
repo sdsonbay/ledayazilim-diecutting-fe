@@ -1,10 +1,11 @@
-/* eslint-disable react-hooks/refs, react-hooks/immutability, react/no-unknown-property --
+/* eslint-disable react-hooks/immutability, react/no-unknown-property --
  * Three.js sahnesi ve jest işleyicileri imperatif: ref'ler yalnızca useFrame / jest geri çağrılarında
  * okunur-yazılır (render sırasında değil); R3F JSX öğeleri (mesh, light…) DOM özelliği değildir. */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
 import * as THREE from 'three'
-import { createPanelMaterials, materialsForMesh } from '../../fold/foldMaterials'
-import { buildFoldGraph, cameraFromFrame, lightRig, measureFold, type FoldMeshData, type FoldNode } from '../../fold/foldModel'
+import { createPanelMaterials, materialsForMesh, type Substrate } from '../../fold/foldMaterials'
+import { buildFoldGraph, layoutFold, restAt, type FoldFrame, type FoldMeshData, type FoldNode, type FoldStep } from '../../fold/foldModel'
+import { jointProgress } from '../../fold/foldPlan'
 import { loadPrintAssets, type LoadedPrintAssets } from '../../fold/foldPrintAssets'
 import { prepareFoldGraphPrint } from '../../fold/foldPrintContext'
 import { geometryFromMeshData } from '../../fold/foldThree'
@@ -19,22 +20,40 @@ export interface OrbitState {
   touchedAt: number
 }
 
+/** Katlanma sürücüsü: sahne `value`yu `target`a `speed` (birim/sn) hızla taşır. */
+export interface FoldDriver {
+  target: number
+  speed: number
+  value: number
+}
+
 const emptyAssets = (): LoadedPrintAssets => ({ texture: null, finishMaps: null, dispose: () => undefined })
 
-const PanelMesh = ({ data, layer, assets, finish }: { data: FoldMeshData; layer: number; assets: LoadedPrintAssets; finish: PrintFinish }) => {
+const PanelMesh = ({
+  data,
+  assets,
+  finish,
+  substrate,
+}: {
+  data: FoldMeshData
+  assets: LoadedPrintAssets
+  finish: PrintFinish
+  substrate: Substrate
+}) => {
   const mesh = useMemo(() => {
     const materials = createPanelMaterials({
       printable: data.printable,
-      layer,
+      layer: 0,
       printMap: data.printable ? assets.texture : null,
       finish,
       finishMaps: assets.finishMaps,
+      substrate,
     })
     const m = new THREE.Mesh(geometryFromMeshData(data), materialsForMesh(materials))
     m.castShadow = true
     m.receiveShadow = true
     return m
-  }, [data, layer, assets, finish])
+  }, [data, assets, finish, substrate])
   useEffect(
     () => () => {
       mesh.geometry.dispose()
@@ -47,46 +66,37 @@ const PanelMesh = ({ data, layer, assets, finish }: { data: FoldMeshData; layer:
 
 const AXIS = new THREE.Vector3()
 
+/** Panel ağacı: her kırım kendi zaman penceresinde (montaj sırası) döner. */
 const FoldBranch = ({
   node,
-  foldRef,
+  driver,
   assets,
   finish,
-  layerRef,
+  substrate,
 }: {
   node: FoldNode
-  foldRef: MutableRefObject<number>
+  driver: MutableRefObject<FoldDriver>
   assets: LoadedPrintAssets
   finish: PrintFinish
-  layerRef: MutableRefObject<number>
+  substrate: Substrate
 }) => {
-  const liftRefs = useRef<(THREE.Group | null)[]>([])
   const pivotRefs = useRef<(THREE.Group | null)[]>([])
   useFrame(() => {
-    const t = Math.min(1, Math.max(0, foldRef.current))
-    node.meshes.forEach((mesh, i) => {
-      const g = liftRefs.current[i]
-      if (g) g.position.y = mesh.lift * t
-    })
+    const time = driver.current.value
     node.joints.forEach((joint, i) => {
       const g = pivotRefs.current[i]
-      if (g) g.quaternion.setFromAxisAngle(AXIS.set(...joint.axis), THREE.MathUtils.degToRad(-joint.angle * t))
+      if (g) g.quaternion.setFromAxisAngle(AXIS.set(...joint.axis), THREE.MathUtils.degToRad(-joint.angle * jointProgress(joint, time)))
     })
   })
   return (
     <group>
-      {node.meshes.map((mesh, i) => {
-        const layer = layerRef.current++
-        return (
-          <group key={mesh.id} ref={(el) => void (liftRefs.current[i] = el)}>
-            <PanelMesh data={mesh} layer={layer} assets={assets} finish={finish} />
-          </group>
-        )
-      })}
+      {node.meshes.map((mesh) => (
+        <PanelMesh key={mesh.id} data={mesh} assets={assets} finish={finish} substrate={substrate} />
+      ))}
       {node.joints.map((joint, i) => (
         <group key={joint.id} ref={(el) => void (pivotRefs.current[i] = el)} position={joint.hinge}>
           <group position={joint.childShift}>
-            <FoldBranch node={joint.node} foldRef={foldRef} assets={assets} finish={finish} layerRef={layerRef} />
+            <FoldBranch node={joint.node} driver={driver} assets={assets} finish={finish} substrate={substrate} />
           </group>
         </group>
       ))}
@@ -95,84 +105,159 @@ const FoldBranch = ({
 }
 
 /** Kamera: kutuyu çerçeveler, yaw/pitch/zoom'u yumuşakça izler, boştayken yavaşça döner. */
-const OrbitCamera = ({ root, orbit, autoRotate }: { root: FoldNode; orbit: MutableRefObject<OrbitState>; autoRotate: boolean }) => {
+const OrbitCamera = ({
+  open,
+  closed,
+  span,
+  driver,
+  orbit,
+  autoRotate,
+}: {
+  open: FoldFrame
+  closed: FoldFrame
+  span: number
+  driver: MutableRefObject<FoldDriver>
+  orbit: MutableRefObject<OrbitState>
+  autoRotate: boolean
+}) => {
   const camera = useThree((s) => s.camera) as THREE.PerspectiveCamera
-  const frame = useMemo(() => cameraFromFrame(measureFold(root)), [root])
-  const base = useMemo(() => {
-    const target = new THREE.Vector3(...frame.target)
-    const offset = new THREE.Vector3(...frame.position).sub(target)
-    return { target, radius: offset.length(), yaw: Math.atan2(offset.x, offset.z), pitch: Math.asin(offset.y / offset.length()) }
-  }, [frame])
+  const target = useMemo(() => new THREE.Vector3(), [])
   const smooth = useRef({ yaw: 0, pitch: 0, zoom: 1 })
 
   useLayoutEffect(() => {
-    camera.near = frame.near
-    camera.far = frame.far
+    camera.near = Math.max(0.5, span / 200)
+    camera.far = span * 40
     camera.updateProjectionMatrix()
-  }, [camera, frame])
+  }, [camera, span])
 
   useFrame((_, dt) => {
     const o = orbit.current
-    if (autoRotate && Date.now() - o.touchedAt > 2500) o.yaw += dt * 0.25
+    if (autoRotate && Date.now() - o.touchedAt > 2500) o.yaw += dt * 0.22
     const k = 1 - Math.exp(-dt * 9)
     const s = smooth.current
     s.yaw += (o.yaw - s.yaw) * k
     s.pitch += (o.pitch - s.pitch) * k
     s.zoom += (o.zoom - s.zoom) * k
-    const yaw = base.yaw + s.yaw
-    const pitch = Math.min(1.45, Math.max(-0.2, base.pitch + s.pitch))
-    const r = base.radius * s.zoom
-    camera.position.set(
-      base.target.x + r * Math.cos(pitch) * Math.sin(yaw),
-      base.target.y + r * Math.sin(pitch),
-      base.target.z + r * Math.cos(pitch) * Math.cos(yaw),
+    // Kadraj düz dieline'dan kapalı kutuya doğru yumuşakça daralır.
+    const f = jointProgress({ start: 0.15, end: 1 }, driver.current.value)
+    target.set(
+      open.center[0] + (closed.center[0] - open.center[0]) * f,
+      open.center[1] + (closed.center[1] - open.center[1]) * f,
+      open.center[2] + (closed.center[2] - open.center[2]) * f,
     )
-    camera.lookAt(base.target)
+    const spanNow = open.span + (closed.span - open.span) * f
+    const fit = spanNow / 2 / Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))
+    const radius = (fit * 1.55) / Math.min(1, camera.aspect || 1)
+    const yaw = 0.62 + s.yaw
+    const pitch = Math.min(1.35, Math.max(-0.05, 0.36 + s.pitch))
+    const r = radius * s.zoom
+    camera.position.set(
+      target.x + r * Math.cos(pitch) * Math.sin(yaw),
+      target.y + r * Math.sin(pitch),
+      target.z + r * Math.cos(pitch) * Math.cos(yaw),
+    )
+    camera.lookAt(target)
   })
   return null
 }
 
-const Lights = ({ light }: { light: number }) => {
+const Lights = ({ light, span }: { light: number; span: number }) => {
   const gl = useThree((s) => s.gl)
-  const rig = lightRig(light)
+  const level = Math.min(1.6, Math.max(0.35, light))
   useLayoutEffect(() => {
-    gl.toneMappingExposure = rig.exposure
-  }, [gl, rig.exposure])
+    gl.toneMappingExposure = 0.9 + level * 0.25
+  }, [gl, level])
+  const d = span * 1.6
   return (
     <>
-      <hemisphereLight args={[0xfff8f0, 0x7a7068, rig.hemi]} />
-      <directionalLight position={[80, 160, 40]} intensity={rig.key} castShadow />
-      <directionalLight position={[-60, 40, -80]} intensity={rig.fill} />
+      <hemisphereLight args={[0xffffff, 0x9a948c, 0.75 + level * 0.6]} />
+      <directionalLight
+        position={[span * 0.5, span * 2.8, span * 0.7]}
+        intensity={0.6 + level * 0.9}
+        castShadow
+        shadow-mapSize-width={2048}
+        shadow-mapSize-height={2048}
+        shadow-camera-left={-d}
+        shadow-camera-right={d}
+        shadow-camera-top={d}
+        shadow-camera-bottom={-d}
+        shadow-camera-near={span * 0.1}
+        shadow-camera-far={span * 8}
+        shadow-bias={-0.0004}
+        shadow-radius={6}
+      />
+      <directionalLight position={[-span * 1.6, span * 0.9, span * 1.1]} intensity={0.35 + level * 0.3} />
     </>
+  )
+}
+
+/** Modeli yönlendirir ve katlanma boyunca zeminde tutar. */
+const RestingGroup = ({
+  layout,
+  driver,
+  children,
+}: {
+  layout: ReturnType<typeof layoutFold>
+  driver: MutableRefObject<FoldDriver>
+  children: React.ReactNode
+}) => {
+  const ref = useRef<THREE.Group>(null)
+  useFrame(() => {
+    const g = ref.current
+    if (!g) return
+    g.position.set(layout.offset[0], layout.offset[1] + restAt(layout.rest, driver.current.value), layout.offset[2])
+  })
+  return (
+    <group ref={ref} quaternion={layout.quaternion} position={layout.offset}>
+      {children}
+    </group>
   )
 }
 
 export interface FoldSceneProps {
   dieline: DielineResponse
-  /** Hedef katlanma (0 açık, 1 kapalı) — sahne yaya benzer bir hızla yaklaşır. */
-  fold: number
+  driver: MutableRefObject<FoldDriver>
   light: number
+  substrate: Substrate
   printUri?: string | null
   printTransform: PrintTransform
   printFinish: PrintFinish
   orbit: MutableRefObject<OrbitState>
   autoRotate: boolean
+  /** Montaj adımları hazır olunca. */
+  onSteps?: (steps: FoldStep[]) => void
+  /** ~10 Hz ilerleme bildirimi (oynatma sırasında kaydırıcı ve adım göstergesi için). */
+  onProgress?: (value: number) => void
 }
 
-export const FoldScene = ({ dieline, fold, light, printUri, printTransform, printFinish, orbit, autoRotate }: FoldSceneProps) => {
-  const target = useRef(fold)
-  target.current = fold
-  const foldRef = useRef(fold)
-  const velocity = useRef(0)
-  const layerRef = useRef(0)
-  layerRef.current = 0
+export const FoldScene = ({
+  dieline,
+  driver,
+  light,
+  substrate,
+  printUri,
+  printTransform,
+  printFinish,
+  orbit,
+  autoRotate,
+  onSteps,
+  onProgress,
+}: FoldSceneProps) => {
   const [assets, setAssets] = useState<LoadedPrintAssets>(emptyAssets)
+  const lastReport = useRef({ at: 0, value: -1 })
 
   const graph = useMemo(() => {
     const g = buildFoldGraph(dieline)
     prepareFoldGraphPrint(g.root, { bounds: dieline.bounds, printTransform, printFinish, printUrl: printUri })
     return g
   }, [dieline, printTransform, printFinish, printUri])
+
+  const rootRole = dieline.panels.find((p) => p.id === dieline.rootPanel)?.role ?? 'wall'
+  const layout = useMemo(() => layoutFold(graph.root, rootRole, graph.thickness), [graph, rootRole])
+
+  useEffect(() => {
+    onSteps?.(graph.steps)
+  }, [graph, onSteps])
 
   useEffect(() => {
     let disposed = false
@@ -193,21 +278,39 @@ export const FoldScene = ({ dieline, fold, light, printUri, printTransform, prin
     }
   }, [printUri, printFinish])
 
-  // Kritik sönümlü yay: katlanma hedefe yumuşak yaklaşır.
+  // Sabit hızlı ilerleme: montaj adımları her kırımın kendi penceresinde yumuşatılır.
   useFrame((_, dt) => {
-    const step = Math.min(dt, 1 / 30)
-    const stiffness = 60
-    const damping = 2 * Math.sqrt(stiffness)
-    const accel = stiffness * (target.current - foldRef.current) - damping * velocity.current
-    velocity.current += accel * step
-    foldRef.current += velocity.current * step
+    const d = driver.current
+    const step = Math.min(dt, 1 / 20) * d.speed
+    const diff = d.target - d.value
+    d.value = Math.abs(diff) <= step ? d.target : d.value + Math.sign(diff) * step
+    const now = performance.now()
+    const r = lastReport.current
+    if (onProgress && r.value !== d.value && (now - r.at > 90 || d.value === d.target)) {
+      r.at = now
+      r.value = d.value
+      onProgress(d.value)
+    }
   })
 
   return (
     <>
-      <Lights light={light} />
-      <FoldBranch node={graph.root} foldRef={foldRef} assets={assets} finish={printFinish} layerRef={layerRef} />
-      <OrbitCamera root={graph.root} orbit={orbit} autoRotate={autoRotate} />
+      <Lights light={light} span={layout.frame.span} />
+      <RestingGroup layout={layout} driver={driver}>
+        <FoldBranch node={graph.root} driver={driver} assets={assets} finish={printFinish} substrate={substrate} />
+      </RestingGroup>
+      <mesh rotation-x={-Math.PI / 2} position={[0, -0.05, 0]} receiveShadow>
+        <planeGeometry args={[layout.frame.span * 12, layout.frame.span * 12]} />
+        <shadowMaterial transparent opacity={0.16} />
+      </mesh>
+      <OrbitCamera
+        open={layout.openFrame}
+        closed={layout.closedFrame}
+        span={layout.frame.span}
+        driver={driver}
+        orbit={orbit}
+        autoRotate={autoRotate}
+      />
     </>
   )
 }

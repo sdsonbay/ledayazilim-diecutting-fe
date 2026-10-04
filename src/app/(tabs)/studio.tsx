@@ -1,7 +1,9 @@
+import { useLocalSearchParams } from 'expo-router'
 import { useEffect, useRef, useState } from 'react'
 import { StyleSheet, View, useWindowDimensions } from 'react-native'
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated'
 import { ExportSheet } from '../../components/editor/ExportSheet'
+import { ImportDrop } from '../../components/ImportDrop'
 import { ImposePanel } from '../../components/editor/ImposePanel'
 import { Stage, type StageMode } from '../../components/editor/Stage'
 import { Button, Chip, IconButton, Input, Page, PageHeader, SectionTitle, Segmented, Text, Toggle, useFeedback, useIsWide, type IconName } from '../../components/ui'
@@ -52,7 +54,8 @@ export default function StudioScreen() {
   const { toast, confirm } = useFeedback()
   const wide = useIsWide()
   const { height } = useWindowDimensions()
-  const [source, setSource] = useState<'param' | 'draw'>('param')
+  const params = useLocalSearchParams<{ source?: string }>()
+  const [source, setSource] = useState<'param' | 'draw' | 'file'>(params.source === 'file' ? 'file' : params.source === 'draw' ? 'draw' : 'param')
   const [family, setFamily] = useState<Family>('tuck')
   const [sides, setSides] = useState(6)
   const [dims, setDims] = useState({ length: 120, width: 80, height: 40 })
@@ -157,7 +160,18 @@ export default function StudioScreen() {
   }
 
   const controls =
-    source === 'param' ? (
+    source === 'file' ? (
+      <Animated.View key="file" entering={FadeIn.duration(200)}>
+        <ImportDrop
+          busy={busy}
+          setBusy={setBusy}
+          onDieline={(d) => {
+            setDieline(d)
+            setMode('2d')
+          }}
+        />
+      </Animated.View>
+    ) : source === 'param' ? (
       <Animated.View key="param" entering={FadeIn.duration(200)} style={{ gap: 16 }}>
         <SectionTitle title={t('studio.family')} />
         <View style={styles.wrap}>
@@ -262,16 +276,17 @@ export default function StudioScreen() {
   return (
     <Page scrollEnabled={!drawing}>
       <PageHeader kicker={t('tab.studio')} title={t('studio.title')} lead={t('studio.leadShort')} />
-      <View style={{ maxWidth: 420, marginBottom: 20 }}>
+      <View style={{ maxWidth: 520, marginBottom: 20 }}>
         <Segmented
           value={source}
           onChange={(v) => {
             setSource(v)
-            if (v === 'param') setDieline(null)
+            setDieline(null)
           }}
           options={[
             { value: 'param', label: t('studio.modeParam'), icon: 'package' },
             { value: 'draw', label: t('studio.modeDraw'), icon: 'edit-3' },
+            { value: 'file', label: t('studio.modeFile'), icon: 'upload' },
           ]}
         />
       </View>

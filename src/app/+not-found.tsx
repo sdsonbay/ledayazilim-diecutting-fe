@@ -9,7 +9,7 @@ export default function NotFound() {
   const { t } = useI18n()
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg, justifyContent: 'center', padding: 24 }}>
-      <EmptyState icon="compass" title={t('notFound.title')} body={t('notFound.body')} action={<Button label={t('notFound.home')} onPress={() => router.replace('/')} />} />
+      <EmptyState icon="compass" title={t('notFound.title')} body={t('notFound.body')} action={<Button label={t('notFound.home')} onPress={() => router.replace('/catalog')} />} />
     </View>
   )
 }

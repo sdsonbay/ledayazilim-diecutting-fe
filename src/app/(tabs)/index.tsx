@@ -1,271 +1,209 @@
-import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { ActivityIndicator, FlatList, ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native'
-import Animated, { FadeIn, FadeInDown, LinearTransition } from 'react-native-reanimated'
+import { useQuery } from '@tanstack/react-query'
+import { Image } from 'expo-image'
+import { router } from 'expo-router'
+import Head from 'expo-router/head'
+import { ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native'
+import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useAuth } from '../../auth/AuthContext'
-import { DielineHero } from '../../components/DielineHero'
+import { HeroFold } from '../../components/HeroFold'
 import { Logo } from '../../components/Logo'
-import { TemplateCard } from '../../components/TemplateCard'
-import { Button, Chip, Container, EmptyState, Input, Skeleton, TAB_BAR_SPACE, Text, staggerIn, useIsWide } from '../../components/ui'
-import { useFavorites } from '../../hooks/useFavorites'
-import { apiErrorMessage } from '../../i18n/errors'
+import { Button, Container, Icon, ScalePressable, TAB_BAR_SPACE, Text, staggerIn, useIsWide, type IconName } from '../../components/ui'
 import { useI18n } from '../../i18n/LocaleContext'
-import { api } from '../../lib/api'
-import type { TemplateSummary } from '../../lib/types'
+import type { MessageKey } from '../../i18n/messages'
+import { api, previewUrl } from '../../lib/api'
+import type { CatalogFacet } from '../../lib/types'
 import { useTheme } from '../../theme/ThemeContext'
 import { radius } from '../../theme/tokens'
-
-const PAGE_SIZE = 48
-const GAP = 14
-
-const useDebounced = <T,>(value: T, ms: number): T => {
-  const [debounced, setDebounced] = useState(value)
-  useEffect(() => {
-    const handle = setTimeout(() => setDebounced(value), ms)
-    return () => clearTimeout(handle)
-  }, [value, ms])
-  return debounced
-}
-
-export default function CatalogScreen() {
-  const { colors } = useTheme()
-  const { t, label, locale } = useI18n()
-  const { loggedIn } = useAuth()
-  const insets = useSafeAreaInsets()
-  const wide = useIsWide()
-  const { width } = useWindowDimensions()
-  const favorites = useFavorites()
-  const [query, setQuery] = useState('')
-  const [material, setMaterial] = useState('')
-  const [category, setCategory] = useState('')
-  const [showFavorites, setShowFavorites] = useState(false)
-  const debounced = useDebounced(query, 250)
-
-  const columns = width >= 1180 ? 4 : width >= 860 ? 3 : 2
-  const contentWidth = Math.min(width, 1240) - 40
-  const itemWidth = (contentWidth - GAP * (columns - 1)) / columns
-
-  const coverage = useQuery({ queryKey: ['coverage'], queryFn: api.dctCoverage, staleTime: 60 * 60_000 })
-
-  const catalog = useInfiniteQuery({
-    queryKey: ['templates', debounced, material, category, showFavorites ? favorites.list.join(',') : ''],
-    initialPageParam: 1,
-    queryFn: ({ pageParam }) =>
-      showFavorites
-        ? api.templates(debounced, { ids: favorites.list.slice(0, 200), limit: 96 })
-        : api.templates(debounced, {
-            ...(material ? { material } : {}),
-            ...(category ? { category } : {}),
-            page: pageParam,
-            limit: PAGE_SIZE,
-          }),
-    getNextPageParam: (last) => (last.page < last.pageCount ? last.page + 1 : undefined),
-    enabled: !showFavorites || favorites.list.length > 0,
-    placeholderData: (previous) => previous,
-  })
-
-  const first = catalog.data?.pages[0]
-  const items = useMemo<TemplateSummary[]>(() => {
-    if (showFavorites && favorites.list.length === 0) return []
-    return catalog.data?.pages.flatMap((p) => p.items) ?? []
-  }, [catalog.data, showFavorites, favorites.list.length])
-  const tree = first?.tree ?? []
-  const branch = tree.find((b) => b.id === material)
-  const total = showFavorites ? items.length : (first?.total ?? 0)
-
-  const rows = useMemo(() => {
-    const out: TemplateSummary[][] = []
-    for (let i = 0; i < items.length; i += columns) out.push(items.slice(i, i + columns))
-    return out
-  }, [items, columns])
-
-  const selectAll = () => {
-    setShowFavorites(false)
-    setMaterial('')
-    setCategory('')
-  }
-
-  const header = (
-    <View>
-      <Container>
-        {!wide ? (
-          <View style={{ paddingTop: insets.top + 8, paddingBottom: 8 }}>
-            <Logo />
-          </View>
-        ) : null}
-        <View style={[styles.hero, wide ? styles.heroWide : null]}>
-          <Animated.View entering={FadeInDown.springify().damping(20)} style={{ flex: 1, gap: 14, maxWidth: 640 }}>
-            <Text variant="caption" tone="accent">
-              {t('home.kicker')}
-            </Text>
-            <Text variant={wide ? 'hero' : 'display'} style={wide ? { fontSize: 64, lineHeight: 64 } : null}>
-              {t('home.title')}
-            </Text>
-            <Text variant="body" tone="muted" style={{ fontSize: 16, lineHeight: 24 }}>
-              {t('home.lead')}
-            </Text>
-            <View style={styles.stats}>
-              <Stat value={first ? first.catalogTotal.toLocaleString(locale) : '—'} label={t('home.statTemplates')} />
-              <Stat
-                value={coverage.data ? compact(coverage.data.configurableTotal, locale) : '—'}
-                label={t('home.statPerms')}
-              />
-              <Stat value="3" label={t('home.statFormats')} />
-            </View>
-          </Animated.View>
-          <Animated.View entering={FadeIn.delay(150).duration(600)} style={wide ? styles.heroArt : styles.heroArtNarrow}>
-            <DielineHero height={wide ? 300 : 190} />
-          </Animated.View>
-        </View>
-
-        <View style={styles.search}>
-          <Input
-            value={query}
-            onChangeText={setQuery}
-            placeholder={wide ? t('catalog.search') : t('catalog.searchShort')}
-            icon="search"
-            returnKeyType="search"
-            autoCorrect={false}
-            autoCapitalize="none"
-            clearButtonMode="while-editing"
-            accessibilityLabel={t('catalog.search')}
-          />
-        </View>
-      </Container>
-
-      <ChipRow wide={wide}>
-        <Chip label={t('catalog.all')} selected={!showFavorites && !material} onPress={selectAll} count={first?.catalogTotal} />
-        <Chip
-          label={t('catalog.favorites')}
-          icon="heart"
-          selected={showFavorites}
-          count={loggedIn ? favorites.list.length : undefined}
-          onPress={() => {
-            if (!loggedIn) {
-              favorites.toggle('')
-              return
-            }
-            setShowFavorites(true)
-            setMaterial('')
-            setCategory('')
-          }}
-        />
-        {tree.map((b) => (
-          <Chip
-            key={b.id}
-            label={label(b.label)}
-            count={b.count}
-            selected={!showFavorites && material === b.id}
-            onPress={() => {
-              setShowFavorites(false)
-              setMaterial(material === b.id ? '' : b.id)
-              setCategory('')
-            }}
-          />
-        ))}
-      </ChipRow>
-      {branch && !showFavorites ? (
-        <Animated.View entering={FadeInDown.springify().damping(20)} layout={LinearTransition}>
-          <ChipRow wide={wide} tight>
-            {branch.groups.map((g) => (
-              <Chip key={g.id} label={label(g.label)} count={g.count} selected={category === g.id} onPress={() => setCategory(category === g.id ? '' : g.id)} />
-            ))}
-          </ChipRow>
-        </Animated.View>
-      ) : null}
-
-      <Container style={styles.countRow}>
-        <Text variant="smallStrong" tone="muted">
-          {showFavorites ? t('catalog.favCount', { n: total }) : t('catalog.count', { n: total.toLocaleString(locale) })}
-        </Text>
-        {catalog.isFetching && !catalog.isFetchingNextPage ? <ActivityIndicator size="small" color={colors.muted} /> : null}
-      </Container>
-    </View>
-  )
-
-  return (
-    <FlatList
-      style={{ flex: 1, backgroundColor: colors.bg }}
-      data={rows}
-      keyExtractor={(row) => row.map((r) => r.id).join('|')}
-      ListHeaderComponent={header}
-      contentContainerStyle={{ paddingBottom: (wide ? 64 : TAB_BAR_SPACE) + insets.bottom }}
-      showsVerticalScrollIndicator={false}
-      keyboardShouldPersistTaps="handled"
-      onEndReachedThreshold={0.6}
-      onEndReached={() => {
-        if (catalog.hasNextPage && !catalog.isFetchingNextPage && !showFavorites) void catalog.fetchNextPage()
-      }}
-      renderItem={({ item: row, index }) => (
-        <Container style={{ flexDirection: 'row', gap: GAP, marginBottom: GAP }}>
-          {row.map((item, i) => (
-            <Animated.View key={item.id} entering={staggerIn((index * columns + i) % PAGE_SIZE)} style={{ width: itemWidth }}>
-              <TemplateCard item={item} favorited={favorites.ids.has(item.id)} onFavorite={favorites.toggle} />
-            </Animated.View>
-          ))}
-        </Container>
-      )}
-      ListEmptyComponent={
-        catalog.isLoading ? (
-          <Container style={{ flexDirection: 'row', flexWrap: 'wrap', gap: GAP }}>
-            {Array.from({ length: columns * 2 }, (_, i) => (
-              <View key={i} style={{ width: itemWidth, gap: 10 }}>
-                <Skeleton height={itemWidth * 0.75} rounded={radius.lg} />
-                <Skeleton width="60%" height={12} />
-                <Skeleton width="85%" height={16} />
-              </View>
-            ))}
-          </Container>
-        ) : catalog.isError ? (
-          <Container>
-            <EmptyState
-              icon="wifi-off"
-              title={apiErrorMessage(catalog.error, locale, 'catalog.loadError', t)}
-              action={<Button label={t('common.retry')} variant="outline" icon="refresh-cw" onPress={() => void catalog.refetch()} />}
-            />
-          </Container>
-        ) : (
-          <Container>
-            <EmptyState
-              icon={showFavorites ? 'heart' : 'search'}
-              title={showFavorites ? t('catalog.favorites') : t('catalog.empty')}
-              body={showFavorites ? t('catalog.favEmpty') : undefined}
-              action={<Button label={t('catalog.clear')} variant="outline" onPress={() => { setQuery(''); selectAll() }} />}
-            />
-          </Container>
-        )
-      }
-      ListFooterComponent={
-        catalog.isFetchingNextPage ? (
-          <View style={{ paddingVertical: 24, alignItems: 'center', gap: 8 }}>
-            <ActivityIndicator color={colors.muted} />
-            <Text variant="small" tone="muted">
-              {t('catalog.loadingMore')}
-            </Text>
-          </View>
-        ) : null
-      }
-    />
-  )
-}
-
-/** Dar ekranda yatay kaydırma, geniş ekranda sarmalanan chip satırı. */
-const ChipRow = ({ wide, tight, children }: { wide: boolean; tight?: boolean; children: ReactNode }) =>
-  wide ? (
-    <Container style={[styles.chipsWrap, tight ? { paddingTop: 0 } : null]}>{children}</Container>
-  ) : (
-    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={[styles.chips, tight ? { paddingTop: 0 } : null]}>
-      {children}
-    </ScrollView>
-  )
 
 const compact = (n: number, locale: string) =>
   new Intl.NumberFormat(locale === 'tr' ? 'tr-TR' : 'en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(n)
 
+const FEATURES: { icon: IconName; title: MessageKey; body: MessageKey }[] = [
+  { icon: 'sliders', title: 'landing.f1Title', body: 'landing.f1Body' },
+  { icon: 'box', title: 'landing.f2Title', body: 'landing.f2Body' },
+  { icon: 'layout', title: 'landing.f3Title', body: 'landing.f3Body' },
+  { icon: 'image', title: 'landing.f4Title', body: 'landing.f4Body' },
+  { icon: 'download', title: 'landing.f5Title', body: 'landing.f5Body' },
+  { icon: 'code', title: 'landing.f6Title', body: 'landing.f6Body' },
+]
+
+const STEPS: { icon: IconName; title: MessageKey; body: MessageKey }[] = [
+  { icon: 'grid', title: 'landing.step1Title', body: 'landing.step1Body' },
+  { icon: 'maximize', title: 'landing.step2Title', body: 'landing.step2Body' },
+  { icon: 'package', title: 'landing.step3Title', body: 'landing.step3Body' },
+]
+
+export default function HomeScreen() {
+  const { colors } = useTheme()
+  const { t, locale } = useI18n()
+  const { loggedIn } = useAuth()
+  const insets = useSafeAreaInsets()
+  const wide = useIsWide()
+  const { width, height } = useWindowDimensions()
+
+  const overview = useQuery({ queryKey: ['templates', 'overview'], queryFn: () => api.templates('', { limit: 1 }), staleTime: 10 * 60_000 })
+  const coverage = useQuery({ queryKey: ['coverage'], queryFn: api.dctCoverage, staleTime: 60 * 60_000 })
+
+  const groups: (CatalogFacet & { material: string })[] = (overview.data?.tree ?? [])
+    .flatMap((branch) => branch.groups.map((g) => ({ ...g, material: branch.id })))
+    .sort((a, b) => (b.count ?? 0) - (a.count ?? 0))
+    .slice(0, 8)
+  const columns = width >= 1180 ? 4 : width >= 700 ? 3 : 2
+  const cardWidth = (Math.min(width, 1240) - 40 - 14 * (columns - 1)) / columns
+
+  return (
+    <ScrollView
+      style={{ flex: 1, backgroundColor: colors.bg }}
+      contentContainerStyle={{ paddingBottom: wide ? 0 : TAB_BAR_SPACE + insets.bottom }}
+      showsVerticalScrollIndicator={false}
+    >
+      <Head>
+        <title>Leda Diecutting — parametrik bıçak izi ve 3D kutu katlama</title>
+        <meta name="description" content={t('landing.lead')} />
+      </Head>
+
+      {/* ───── Hero */}
+      <Container style={[styles.hero, wide ? styles.heroWide : { paddingTop: insets.top + 10 }]}>
+        {!wide ? <Logo /> : null}
+        <Animated.View entering={FadeInDown.springify().damping(20)} style={[styles.heroCopy, wide ? { flex: 1 } : null]}>
+          <Text variant="caption" tone="accent">
+            {t('home.kicker')}
+          </Text>
+          <Text variant="hero" style={wide ? { fontSize: 68, lineHeight: 68 } : { fontSize: 44, lineHeight: 46 }}>
+            {t('landing.title')}
+          </Text>
+          {/* Dar ekranda vitrin başlığın hemen altında: ilk ekranda görünsün. */}
+          {!wide ? <HeroFold height={340} /> : null}
+          <Text variant="body" tone="muted" style={{ fontSize: 17, lineHeight: 26, maxWidth: 560 }}>
+            {t('landing.lead')}
+          </Text>
+          <View style={styles.ctas}>
+            <Button label={t('landing.ctaCatalog')} size="lg" iconRight="arrow-right" onPress={() => router.navigate('/catalog')} />
+            <Button label={t('landing.ctaStudio')} size="lg" variant="outline" icon="pen-tool" onPress={() => router.navigate('/studio')} />
+          </View>
+          <View style={styles.stats}>
+            <Stat value={overview.data ? overview.data.catalogTotal.toLocaleString(locale) : '—'} label={t('home.statTemplates')} />
+            <Stat value={coverage.data ? compact(coverage.data.configurableTotal, locale) : '—'} label={t('home.statPerms')} />
+            <Stat value="PDF · DXF · SVG" label={t('home.statFormats')} />
+          </View>
+        </Animated.View>
+        {wide ? (
+          <Animated.View entering={FadeIn.delay(200).duration(700)} style={{ flex: 1.05 }}>
+            <HeroFold height={Math.min(620, Math.max(460, height - 200))} />
+          </Animated.View>
+        ) : null}
+      </Container>
+
+      <View style={[styles.trust, { borderColor: colors.line }]}>
+        <Text variant="smallStrong" tone="muted" align="center">
+          {t('landing.trust')}
+        </Text>
+      </View>
+
+      {/* ───── Nasıl çalışır */}
+      <Container style={styles.section}>
+        <SectionHead kicker={t('landing.howKicker')} title={t('landing.howTitle')} />
+        <View style={[styles.grid, { gap: 14 }]}>
+          {STEPS.map((step, i) => (
+            <Animated.View
+              key={step.title}
+              entering={staggerIn(i)}
+              style={[styles.step, { backgroundColor: colors.surface, borderColor: colors.line, width: wide ? (Math.min(width, 1240) - 40 - 28) / 3 : '100%' }]}
+            >
+              <View style={styles.stepTop}>
+                <View style={[styles.stepIcon, { backgroundColor: colors.accentSoft }]}>
+                  <Icon name={step.icon} size={20} color={colors.accent} />
+                </View>
+                <Text variant="display" tone="faint">
+                  {`0${i + 1}`}
+                </Text>
+              </View>
+              <Text variant="title">{t(step.title)}</Text>
+              <Text variant="body" tone="muted">
+                {t(step.body)}
+              </Text>
+            </Animated.View>
+          ))}
+        </View>
+      </Container>
+
+      {/* ───── Kategoriler */}
+      <Container style={styles.section}>
+        <SectionHead
+          kicker={t('landing.catKicker')}
+          title={t('landing.catTitle')}
+          right={<Button label={t('landing.catAll')} variant="ghost" iconRight="arrow-right" onPress={() => router.navigate('/catalog')} />}
+        />
+        <View style={[styles.grid, { gap: 14 }]}>
+          {groups.map((g, i) => (
+            <Animated.View key={`${g.material}-${g.id}`} entering={staggerIn(i)} style={{ width: cardWidth }}>
+              <CategoryCard group={g} />
+            </Animated.View>
+          ))}
+        </View>
+      </Container>
+
+      {/* ───── Özellikler */}
+      <Container style={styles.section}>
+        <SectionHead kicker={t('landing.featKicker')} title={t('landing.featTitle')} />
+        <View style={[styles.grid, { gap: 14 }]}>
+          {FEATURES.map((f, i) => (
+            <Animated.View
+              key={f.title}
+              entering={staggerIn(i)}
+              style={[styles.feature, { borderColor: colors.line, width: wide ? (Math.min(width, 1240) - 40 - 28) / 3 : width >= 600 ? (width - 54) / 2 : '100%' }]}
+            >
+              <Icon name={f.icon} size={22} color={colors.ink} />
+              <Text variant="heading">{t(f.title)}</Text>
+              <Text variant="body" tone="muted">
+                {t(f.body)}
+              </Text>
+            </Animated.View>
+          ))}
+        </View>
+      </Container>
+
+      {/* ───── Çağrı */}
+      {!loggedIn ? (
+        <Container style={styles.section}>
+          <View style={[styles.cta, { backgroundColor: colors.primary }]}>
+            <View style={{ flex: 1, gap: 10 }}>
+              <Text variant="display" tone="onPrimary">
+                {t('landing.ctaTitle')}
+              </Text>
+              <Text variant="body" color={colors.faint} style={{ maxWidth: 560 }}>
+                {t('landing.ctaBody')}
+              </Text>
+            </View>
+            <Button label={t('landing.ctaButton')} variant="accent" size="lg" icon="gift" onPress={() => router.push('/auth/register')} />
+          </View>
+        </Container>
+      ) : null}
+
+      {wide ? <Footer /> : <View style={{ height: 24 }} />}
+    </ScrollView>
+  )
+}
+
+const SectionHead = ({ kicker, title, right }: { kicker: string; title: string; right?: React.ReactNode }) => {
+  const wide = useIsWide()
+  return (
+    <View style={[styles.sectionHead, wide ? { flexDirection: 'row', alignItems: 'flex-end' } : null]}>
+      <View style={{ flex: 1, gap: 6 }}>
+        <Text variant="caption" tone="accent">
+          {kicker}
+        </Text>
+        <Text variant="display">{title}</Text>
+      </View>
+      {right}
+    </View>
+  )
+}
+
 const Stat = ({ value, label }: { value: string; label: string }) => (
   <View style={{ gap: 2 }}>
-    <Text variant="title" style={{ fontSize: 26, lineHeight: 30 }}>
+    <Text variant="title" style={{ fontSize: 24, lineHeight: 28 }}>
       {value}
     </Text>
     <Text variant="small" tone="muted">
@@ -274,14 +212,103 @@ const Stat = ({ value, label }: { value: string; label: string }) => (
   </View>
 )
 
+const CategoryCard = ({ group }: { group: CatalogFacet & { material: string } }) => {
+  const { colors, scheme } = useTheme()
+  const { label, t } = useI18n()
+  const sample = useQuery({
+    queryKey: ['templates', 'sample', group.material, group.id],
+    queryFn: () => api.templates('', { material: group.material, category: group.id, limit: 1 }),
+    staleTime: 60 * 60_000,
+  })
+  const first = sample.data?.items[0]
+  return (
+    <ScalePressable
+      accessibilityRole="link"
+      accessibilityLabel={label(group.label)}
+      onPress={() => router.navigate({ pathname: '/catalog', params: { material: group.material, category: group.id } })}
+      hoverLift
+      scaleTo={0.98}
+      style={[styles.catCard, { backgroundColor: colors.surface, borderColor: colors.line }]}
+    >
+      <View style={[styles.catPreview, { backgroundColor: scheme === 'dark' ? '#0b0b0b' : '#ffffff' }]}>
+        {first ? <Image source={{ uri: previewUrl(first.id, scheme) }} style={styles.catImage} contentFit="contain" transition={250} /> : null}
+      </View>
+      <View style={{ padding: 14, gap: 2 }}>
+        <Text variant="heading" numberOfLines={1}>
+          {label(group.label)}
+        </Text>
+        <Text variant="small" tone="muted">
+          {t('catalog.count', { n: (group.count ?? 0).toLocaleString() })}
+        </Text>
+      </View>
+    </ScalePressable>
+  )
+}
+
+const Footer = () => {
+  const { colors } = useTheme()
+  const { t } = useI18n()
+  const link = (labelKey: MessageKey, onPress: () => void) => (
+    <ScalePressable key={labelKey} accessibilityRole="link" onPress={onPress} scaleTo={0.98}>
+      <Text variant="small" tone="soft">
+        {t(labelKey)}
+      </Text>
+    </ScalePressable>
+  )
+  return (
+    <View style={[styles.footer, { borderColor: colors.line, backgroundColor: colors.surface }]}>
+      <Container style={styles.footerInner}>
+        <View style={{ gap: 10, flex: 1.4 }}>
+          <Logo />
+          <Text variant="small" tone="muted" style={{ maxWidth: 320 }}>
+            {t('app.tagline')}
+          </Text>
+        </View>
+        <View style={styles.footerCol}>
+          <Text variant="caption" tone="muted">
+            {t('footer.product')}
+          </Text>
+          {link('tab.catalog', () => router.navigate('/catalog'))}
+          {link('tab.studio', () => router.navigate('/studio'))}
+          {link('nav.credits', () => router.push('/credits'))}
+        </View>
+        <View style={styles.footerCol}>
+          <Text variant="caption" tone="muted">
+            {t('footer.account')}
+          </Text>
+          {link('nav.login', () => router.push('/auth/login'))}
+          {link('nav.register', () => router.push('/auth/register'))}
+          {link('tab.designs', () => router.navigate('/designs'))}
+        </View>
+      </Container>
+      <Container>
+        <Text variant="small" tone="faint" style={{ paddingVertical: 20 }}>
+          {t('footer.rights', { year: new Date().getFullYear() })}
+        </Text>
+      </Container>
+    </View>
+  )
+}
+
 const styles = StyleSheet.create({
-  hero: { paddingTop: 16, paddingBottom: 8, gap: 12 },
-  heroWide: { flexDirection: 'row', alignItems: 'center', paddingTop: 40, paddingBottom: 24, gap: 32 },
-  heroArt: { flex: 1, alignItems: 'flex-end' },
-  heroArtNarrow: { alignItems: 'center', marginTop: 4 },
-  stats: { flexDirection: 'row', gap: 32, marginTop: 10 },
-  search: { marginTop: 16, marginBottom: 6 },
-  chips: { gap: 8, paddingHorizontal: 20, paddingVertical: 12 },
-  chipsWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingVertical: 12 },
-  countRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 12 },
+  hero: { gap: 18, paddingBottom: 12 },
+  heroWide: { flexDirection: 'row', alignItems: 'center', gap: 32, paddingTop: 32 },
+  heroCopy: { gap: 16 },
+  ctas: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 6 },
+  stats: { flexDirection: 'row', flexWrap: 'wrap', gap: 28, marginTop: 14 },
+  trust: { borderTopWidth: StyleSheet.hairlineWidth * 2, borderBottomWidth: StyleSheet.hairlineWidth * 2, paddingVertical: 16, paddingHorizontal: 20 },
+  section: { paddingTop: 56 },
+  sectionHead: { gap: 12, marginBottom: 22 },
+  grid: { flexDirection: 'row', flexWrap: 'wrap' },
+  step: { borderRadius: radius.xl, borderWidth: StyleSheet.hairlineWidth * 2, padding: 22, gap: 8 },
+  stepTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
+  stepIcon: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
+  catCard: { borderRadius: radius.lg, borderWidth: StyleSheet.hairlineWidth * 2, overflow: 'hidden' },
+  catPreview: { aspectRatio: 4 / 3 },
+  catImage: { position: 'absolute', top: 16, left: 16, right: 16, bottom: 16 },
+  feature: { borderTopWidth: 1.5, paddingTop: 18, paddingBottom: 12, paddingRight: 18, gap: 8 },
+  cta: { borderRadius: radius.xl, padding: 32, gap: 20, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center' },
+  footer: { marginTop: 72, borderTopWidth: StyleSheet.hairlineWidth * 2 },
+  footerInner: { flexDirection: 'row', gap: 32, paddingTop: 40, paddingBottom: 12 },
+  footerCol: { flex: 1, gap: 10 },
 })

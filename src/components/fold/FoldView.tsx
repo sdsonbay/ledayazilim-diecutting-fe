@@ -1,42 +1,65 @@
 /* eslint-disable react-hooks/refs, react-hooks/purity, react/no-unknown-property --
- * Three.js sahnesi ve jest işleyicileri imperatif: ref'ler yalnızca useFrame / jest geri çağrılarında
- * okunur-yazılır (render sırasında değil); R3F JSX öğeleri (mesh, light…) DOM özelliği değildir. */
-import { useEffect, useRef } from 'react'
+ * Kamera ve katlanma durumu ref'lerde; jest geri çağrıları (render dışında) okur-yazar.
+ * R3F JSX öğeleri DOM özelliği değildir. */
+import { useEffect, useRef, type MutableRefObject } from 'react'
 import { Platform, StyleSheet, View } from 'react-native'
 import { Gesture, GestureDetector } from 'react-native-gesture-handler'
 import * as THREE from 'three'
+import type { Substrate } from '../../fold/foldMaterials'
+import type { FoldStep } from '../../fold/foldModel'
 import { defaultPrintTransform } from '../../fold/printDefaults'
 import { defaultPrintFinish, type DielineResponse, type PrintFinish, type PrintTransform } from '../../lib/types'
-import { FoldScene, type OrbitState } from './FoldScene'
+import { FoldScene, type FoldDriver, type OrbitState } from './FoldScene'
 import { Canvas } from './r3f'
+import { snapshotCanvas } from './snapshot'
+
+/** Sahnenin o anki görüntüsünü PNG olarak alan fonksiyon (paylaş / indir). */
+export type FoldCapture = () => Promise<string | null>
 
 export interface FoldViewProps {
   dieline: DielineResponse
+  /** Hedef katlanma: 0 açık (düz), 1 kapalı. */
   fold: number
+  /** Hedefe ilerleme hızı (birim/sn): oynatmada yavaş, kaydırmada hızlı. */
+  speed?: number
   light?: number
+  substrate?: Substrate
   background: string
   printUri?: string | null
   printTransform?: PrintTransform
   printFinish?: PrintFinish
   autoRotate?: boolean
   interactive?: boolean
+  onSteps?: (steps: FoldStep[]) => void
+  onProgress?: (value: number) => void
+  captureRef?: MutableRefObject<FoldCapture | null>
 }
 
 /** 3D katlama: sürükle → döndür, sıkıştır/tekerlek → yakınlaş. Web ve native aynı sahne. */
 export const FoldView = ({
   dieline,
   fold,
+  speed = 0.24,
   light = 1.1,
+  substrate = 'white',
   background,
   printUri,
   printTransform = defaultPrintTransform(),
   printFinish = defaultPrintFinish(),
   autoRotate = true,
   interactive = true,
+  onSteps,
+  onProgress,
+  captureRef,
 }: FoldViewProps) => {
   const orbit = useRef<OrbitState>({ yaw: 0, pitch: 0, zoom: 1, touchedAt: 0 })
+  // Düz dieline halinden başlar; açılışta hedefe doğru adım adım katlanır.
+  const driver = useRef<FoldDriver>({ target: fold, speed, value: 0 })
   const start = useRef({ yaw: 0, pitch: 0, zoom: 1 })
   const hostRef = useRef<View>(null)
+
+  driver.current.target = fold
+  driver.current.speed = speed
 
   useEffect(() => {
     orbit.current = { yaw: 0, pitch: 0, zoom: 1, touchedAt: 0 }
@@ -52,7 +75,7 @@ export const FoldView = ({
     orbit.current.touchedAt = Date.now()
   }
   const zoomTo = (scale: number) => {
-    orbit.current.zoom = Math.min(2.4, Math.max(0.45, start.current.zoom / scale))
+    orbit.current.zoom = Math.min(2.4, Math.max(0.4, start.current.zoom / scale))
     orbit.current.touchedAt = Date.now()
   }
 
@@ -74,7 +97,7 @@ export const FoldView = ({
     if (!el?.addEventListener) return
     const onWheel = (e: WheelEvent) => {
       e.preventDefault()
-      orbit.current.zoom = Math.min(2.4, Math.max(0.45, orbit.current.zoom * Math.exp(e.deltaY * 0.0015)))
+      orbit.current.zoom = Math.min(2.4, Math.max(0.4, orbit.current.zoom * Math.exp(e.deltaY * 0.0015)))
       orbit.current.touchedAt = Date.now()
     }
     el.addEventListener('wheel', onWheel, { passive: false })
@@ -87,24 +110,30 @@ export const FoldView = ({
         <Canvas
           shadows
           dpr={Platform.OS === 'web' ? [1, 2] : undefined}
-          camera={{ fov: 32, near: 1, far: 5000, position: [180, 140, 180] }}
-          gl={{ antialias: true }}
-          onCreated={({ gl }) => {
-            gl.toneMapping = THREE.ACESFilmicToneMapping
+          camera={{ fov: 30, near: 1, far: 5000, position: [180, 140, 180] }}
+          gl={{ antialias: true, preserveDrawingBuffer: Platform.OS === 'web' }}
+          onCreated={({ gl, scene, camera }) => {
+            // Nötr ton eşleme: beyaz karton beyaz kalır (ACES sarı-griye çeker).
+            gl.toneMapping = THREE.NeutralToneMapping
             gl.outputColorSpace = THREE.SRGBColorSpace
+            gl.shadowMap.type = THREE.PCFSoftShadowMap
+            if (captureRef) captureRef.current = () => snapshotCanvas(gl, scene, camera)
           }}
           style={styles.canvas}
         >
           <color attach="background" args={[background]} />
           <FoldScene
             dieline={dieline}
-            fold={fold}
+            driver={driver}
             light={light}
+            substrate={substrate}
             printUri={printUri}
             printTransform={printTransform}
             printFinish={printFinish}
             orbit={orbit}
             autoRotate={autoRotate}
+            onSteps={onSteps}
+            onProgress={onProgress}
           />
         </Canvas>
       </View>
