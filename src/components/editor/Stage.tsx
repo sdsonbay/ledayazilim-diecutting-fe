@@ -85,8 +85,12 @@ export const Stage = ({ dieline, mode, onMode, busy, printUri, printTransform, p
   const snapshot = async () => {
     const uri = await capture.current?.()
     if (!uri || !dieline) return
-    await shareImage(uri, `${dieline.templateId}-3d.png`)
-    toast(t('fold.snapshotDone'), 'success')
+    try {
+      await shareImage(uri, `${dieline.templateId}-3d.png`)
+      toast(t('fold.snapshotDone'), 'success')
+    } catch (err) {
+      toast(err instanceof Error ? err.message : t('editor.exportFail'), 'error')
+    }
   }
   const glb = async () => {
     if (!dieline) return
@@ -94,8 +98,8 @@ export const Stage = ({ dieline, mode, onMode, busy, printUri, printTransform, p
       const bytes = await exportFoldGlb(dieline, substrate, 1)
       await saveFile(bytes, `${dieline.templateId}.glb`, 'model/gltf-binary')
       toast(t('fold.glbDone'), 'success')
-    } catch {
-      toast(t('editor.exportFail'), 'error')
+    } catch (err) {
+      toast(err instanceof Error ? err.message : t('editor.exportFail'), 'error')
     }
   }
 
