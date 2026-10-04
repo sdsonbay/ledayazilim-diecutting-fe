@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Platform, StyleSheet, View, type LayoutChangeEvent } from 'react-native'
 import { Gesture, GestureDetector } from 'react-native-gesture-handler'
 import Animated, { runOnJS, useAnimatedStyle, useSharedValue } from 'react-native-reanimated'
+import { wheelZooms } from '../../lib/wheel'
 
 export interface ViewBox {
   x: number
@@ -133,6 +134,7 @@ export const ZoomSurface = ({
     const el = hostRef.current as unknown as HTMLElement | null
     if (!el?.addEventListener) return
     const onWheel = (e: WheelEvent) => {
+      if (!wheelZooms(e, el)) return
       e.preventDefault()
       const rect = el.getBoundingClientRect()
       const factor = Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0025))

@@ -11,7 +11,9 @@ export default function TabsLayout() {
     <Tabs style={{ flex: 1, backgroundColor: colors.bg }}>
       {wide ? <TopNav /> : null}
       <View style={{ flex: 1 }}>
-        <TabSlot />
+        {/* TabSlot kapsayıcısı varsayılan olarak içerik boyuna uzar (flexShrink 0, basis auto);
+            sınırlanmazsa web'de sayfa kaydırılamaz. */}
+        <TabSlot style={{ flexGrow: 1, flexShrink: 1, flexBasis: 0, minHeight: 0 }} />
       </View>
       {wide ? null : <BottomTabBar />}
       {/* Rotaları kaydeder; görünür çubuk yukarıdaki özel bileşenlerdir. */}

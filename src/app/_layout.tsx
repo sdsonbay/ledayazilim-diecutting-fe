@@ -6,21 +6,25 @@ import { Inter_600SemiBold } from '@expo-google-fonts/inter/600SemiBold'
 import { Inter_700Bold } from '@expo-google-fonts/inter/700Bold'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Stack, router, type ErrorBoundaryProps } from 'expo-router'
+import * as Clipboard from 'expo-clipboard'
 import { useFonts } from 'expo-font'
 import * as SplashScreen from 'expo-splash-screen'
 import { StatusBar } from 'expo-status-bar'
 import * as SystemUI from 'expo-system-ui'
+import * as Updates from 'expo-updates'
 import { useEffect, useState } from 'react'
-import { Platform, View } from 'react-native'
+import { Platform, ScrollView, View } from 'react-native'
 import { GestureHandlerRootView } from 'react-native-gesture-handler'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
 import { AuthProvider } from '../auth/AuthContext'
-import { Button, EmptyState, FeedbackProvider } from '../components/ui'
+import { Button, EmptyState, FeedbackProvider, Text } from '../components/ui'
 import { LocaleProvider, useI18n } from '../i18n/LocaleContext'
+import { crashText, installCrashGuard, onCrash } from '../lib/crashGuard'
 import { hydrateStorage } from '../lib/storage'
 import { UnitProvider } from '../lib/units'
 import { ThemeProvider, useTheme } from '../theme/ThemeContext'
 
+installCrashGuard()
 void SplashScreen.preventAutoHideAsync().catch(() => undefined)
 
 const queryClient = new QueryClient({
@@ -82,6 +86,8 @@ export default function RootLayout() {
 
 function AppStack() {
   const { colors, scheme } = useTheme()
+  const [crash, setCrash] = useState<Error | null>(null)
+  useEffect(() => onCrash(setCrash), [])
 
   useEffect(() => {
     void SystemUI.setBackgroundColorAsync(colors.bg).catch(() => undefined)
@@ -91,6 +97,8 @@ function AppStack() {
       document.querySelector('meta[name="theme-color"]')?.setAttribute('content', colors.bg)
     }
   }, [colors.bg, scheme])
+
+  if (crash) return <CrashScreen error={crash} onDismiss={() => setCrash(null)} />
 
   return (
     <>
@@ -139,5 +147,38 @@ function ErrorScreen({ message, retry }: { message: string; retry: () => Promise
         }
       />
     </View>
+  )
+}
+
+/** Render dışı yakalanmamış hata (native): uygulama kapanmak yerine bu ekranı gösterir. */
+function CrashScreen({ error, onDismiss }: { error: Error; onDismiss: () => void }) {
+  const { colors } = useTheme()
+  const { t } = useI18n()
+  const text = crashText(error)
+  const restart = () => {
+    Updates.reloadAsync().catch(() => {
+      onDismiss()
+      router.replace('/')
+    })
+  }
+  return (
+    <ScrollView style={{ flex: 1, backgroundColor: colors.bg }} contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', padding: 24, gap: 16 }}>
+      <EmptyState
+        icon="alert-octagon"
+        title={t('error.screenTitle')}
+        body={t('error.crashBody')}
+        action={
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, justifyContent: 'center' }}>
+            <Button label={t('error.restart')} icon="refresh-cw" onPress={restart} />
+            <Button label={t('account.copy')} variant="outline" icon="copy" onPress={() => void Clipboard.setStringAsync(text).catch(() => undefined)} />
+          </View>
+        }
+      />
+      <View style={{ backgroundColor: colors.surfaceAlt, borderRadius: 12, padding: 12 }}>
+        <Text variant="mono" tone="soft" selectable>
+          {text}
+        </Text>
+      </View>
+    </ScrollView>
   )
 }

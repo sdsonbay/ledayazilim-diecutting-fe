@@ -56,6 +56,8 @@ export const HeroFold = ({ height }: { height: number }) => {
             printUri={artwork}
             light={1.15}
             onProgress={onProgress}
+            interactive={false}
+            fallback={<DielineHero height={height * 0.8} />}
           />
         </Animated.View>
       ) : (

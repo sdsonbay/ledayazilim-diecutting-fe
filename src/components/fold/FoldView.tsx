@@ -1,7 +1,7 @@
 /* eslint-disable react-hooks/refs, react-hooks/purity, react/no-unknown-property --
  * Kamera ve katlanma durumu ref'lerde; jest geri çağrıları (render dışında) okur-yazar.
  * R3F JSX öğeleri DOM özelliği değildir. */
-import { useEffect, useRef, type MutableRefObject } from 'react'
+import { useEffect, useRef, useState, type MutableRefObject, type ReactNode } from 'react'
 import { Platform, StyleSheet, View } from 'react-native'
 import { useI18n } from '../../i18n/LocaleContext'
 import { useTheme } from '../../theme/ThemeContext'
@@ -13,8 +13,10 @@ import type { Substrate } from '../../fold/foldMaterials'
 import type { FoldStep } from '../../fold/foldModel'
 import { defaultPrintTransform } from '../../fold/printDefaults'
 import { defaultPrintFinish, type DielineResponse, type PrintFinish, type PrintTransform } from '../../lib/types'
+import { wheelZooms } from '../../lib/wheel'
 import { BASE_PITCH, BASE_YAW, FoldScene, PITCH_LIMIT, type FoldDriver, type OrbitState } from './FoldScene'
 import { Canvas } from './r3f'
+import { SceneBoundary } from './SceneBoundary'
 import { snapshotCanvas } from './snapshot'
 
 /** Sahnenin o anki görüntüsünü PNG olarak alan fonksiyon (paylaş / indir). */
@@ -39,6 +41,8 @@ export interface FoldViewProps {
   captureRef?: MutableRefObject<FoldCapture | null>
   /** Ön / arka / üst / alt hazır bakış düğmeleri. */
   viewControls?: boolean
+  /** 3D başlatılamaz / çizim döngüsü hata verirse gösterilir (varsayılan: kısa bilgi notu). */
+  fallback?: ReactNode
 }
 
 // Sabit varsayılanlar: her render'da yeni nesne sahneyi (katlama grafiğini) baştan kurdururdu.
@@ -76,6 +80,7 @@ export const FoldView = ({
   onProgress,
   captureRef,
   viewControls = false,
+  fallback,
 }: FoldViewProps) => {
   const { colors } = useTheme()
   const { t } = useI18n()
@@ -84,6 +89,8 @@ export const FoldView = ({
   const driver = useRef<FoldDriver>({ target: fold, speed, value: 0 })
   const start = useRef({ yaw: 0, pitch: 0, zoom: 1 })
   const hostRef = useRef<View>(null)
+  // Çizim döngüsündeki (render dışı) hatalar ErrorBoundary'ye ulaşmaz; burada yakalanıp 2D'ye düşülür.
+  const [failed, setFailed] = useState(false)
 
   driver.current.target = fold
   driver.current.speed = speed
@@ -134,6 +141,7 @@ export const FoldView = ({
     const el = hostRef.current as unknown as HTMLElement | null
     if (!el?.addEventListener) return
     const onWheel = (e: WheelEvent) => {
+      if (!wheelZooms(e, el)) return
       e.preventDefault()
       orbit.current.zoom = Math.min(2.4, Math.max(0.4, orbit.current.zoom * Math.exp(e.deltaY * 0.0015)))
       orbit.current.touchedAt = Date.now()
@@ -142,9 +150,18 @@ export const FoldView = ({
     return () => el.removeEventListener('wheel', onWheel)
   }, [interactive])
 
-  return (
-    <GestureDetector gesture={Gesture.Simultaneous(pan, pinch)}>
-      <View ref={hostRef} style={styles.host} collapsable={false}>
+  const fallbackView = fallback ?? (
+    <View style={[styles.host, styles.failed]}>
+      <Icon name="box" size={22} color={colors.muted} />
+      <Text variant="small" tone="muted" align="center">
+        {t('fold.failed')}
+      </Text>
+    </View>
+  )
+
+  const body = (
+    <View ref={hostRef} style={styles.host} collapsable={false}>
+      <SceneBoundary fallback={fallbackView} onError={() => setFailed(true)}>
         <Canvas
           shadows
           dpr={Platform.OS === 'web' ? [1, 2] : undefined}
@@ -155,6 +172,18 @@ export const FoldView = ({
             gl.toneMapping = THREE.NeutralToneMapping
             gl.outputColorSpace = THREE.SRGBColorSpace
             gl.shadowMap.type = THREE.PCFSoftShadowMap
+            const render = gl.render.bind(gl)
+            let broken = false
+            gl.render = (s, c) => {
+              if (broken) return
+              try {
+                render(s, c)
+              } catch (err) {
+                broken = true
+                console.warn('[3d] çizim hatası', err)
+                setFailed(true)
+              }
+            }
             if (captureRef) captureRef.current = () => snapshotCanvas(gl, scene, camera)
           }}
           style={styles.canvas}
@@ -174,28 +203,32 @@ export const FoldView = ({
             onProgress={onProgress}
           />
         </Canvas>
-        {viewControls && interactive ? (
-          <View style={[styles.views, { backgroundColor: colors.glass, borderColor: colors.line }]}>
-            {(['front', 'back', 'top', 'bottom'] as const).map((v) => (
-              <ScalePressable key={v} accessibilityRole="button" accessibilityLabel={t(`fold.view.${v}`)} onPress={() => goTo(v)} scaleTo={0.92} style={styles.viewBtn}>
-                <Text variant="smallStrong" tone="soft" style={{ fontSize: 12 }}>
-                  {t(`fold.view.${v}`)}
-                </Text>
-              </ScalePressable>
-            ))}
-            <ScalePressable accessibilityRole="button" accessibilityLabel={t('fold.view.reset')} onPress={() => goTo('reset')} scaleTo={0.92} style={styles.viewBtn}>
-              <Icon name="maximize" size={13} color={colors.inkSoft} />
+      </SceneBoundary>
+      {viewControls && interactive ? (
+        <View style={[styles.views, { backgroundColor: colors.glass, borderColor: colors.line }]}>
+          {(['front', 'back', 'top', 'bottom'] as const).map((v) => (
+            <ScalePressable key={v} accessibilityRole="button" accessibilityLabel={t(`fold.view.${v}`)} onPress={() => goTo(v)} scaleTo={0.92} style={styles.viewBtn}>
+              <Text variant="smallStrong" tone="soft" style={{ fontSize: 12 }}>
+                {t(`fold.view.${v}`)}
+              </Text>
             </ScalePressable>
-          </View>
-        ) : null}
-      </View>
-    </GestureDetector>
+          ))}
+          <ScalePressable accessibilityRole="button" accessibilityLabel={t('fold.view.reset')} onPress={() => goTo('reset')} scaleTo={0.92} style={styles.viewBtn}>
+            <Icon name="maximize" size={13} color={colors.inkSoft} />
+          </ScalePressable>
+        </View>
+      ) : null}
+    </View>
   )
+  if (failed) return fallbackView
+  // Etkileşimsiz görünümde jest algılayıcı yok: web'de touch-action'ı kilitleyip sayfa kaydırmayı engellemesin.
+  return interactive ? <GestureDetector gesture={Gesture.Simultaneous(pan, pinch)}>{body}</GestureDetector> : body
 }
 
 const styles = StyleSheet.create({
   host: { flex: 1, overflow: 'hidden' },
   canvas: { flex: 1 },
+  failed: { alignItems: 'center', justifyContent: 'center', gap: 10, padding: 24 },
   views: {
     position: 'absolute',
     top: 10,
