@@ -1,5 +1,5 @@
 import { router } from 'expo-router'
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { ActivityIndicator, Platform, StyleSheet, View } from 'react-native'
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated'
 import { useAuth } from '../../auth/AuthContext'
@@ -61,6 +61,14 @@ export const Stage = ({ dieline, mode, onMode, busy, printUri, printTransform, p
     setAutoRotateState(v)
     storage.set('diecut.autoRotate', v ? null : '0')
   }
+  // Tuval ipucu her yeni görselde birkaç saniye görünür, sonra tutamakları örtmemek için kaybolur.
+  const [hintDoneFor, setHintDoneFor] = useState<string | null>(null)
+  const showHint = Boolean(onPrintChange && printUri && hintDoneFor !== printUri && mode === '2d')
+  useEffect(() => {
+    if (!showHint || !printUri) return
+    const timer = setTimeout(() => setHintDoneFor(printUri), 4500)
+    return () => clearTimeout(timer)
+  }, [showHint, printUri])
   const capture = useRef<FoldCapture | null>(null)
   const onSteps = useCallback((next: FoldStep[]) => setSteps(next), [])
   const onProgress = useCallback((v: number) => setProgress(v), [])
@@ -128,13 +136,13 @@ export const Stage = ({ dieline, mode, onMode, busy, printUri, printTransform, p
               formatLength={showDims ? units.format : undefined}
               onPrintChange={onPrintChange}
             />
-            {onPrintChange && printUri ? (
-              <View pointerEvents="none" style={[styles.hint, { backgroundColor: colors.glass }]}>
+            {showHint ? (
+              <Animated.View entering={FadeIn.duration(200)} exiting={FadeOut.duration(400)} pointerEvents="none" style={[styles.hint, { backgroundColor: colors.glass }]}>
                 <Icon name="move" size={12} color={colors.inkSoft} />
                 <Text variant="small" tone="soft" numberOfLines={1}>
                   {t('editor.printCanvasShort')}
                 </Text>
-              </View>
+              </Animated.View>
             ) : null}
           </Animated.View>
         ) : mode === '3d' ? (
