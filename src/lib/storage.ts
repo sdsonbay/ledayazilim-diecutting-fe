@@ -7,7 +7,7 @@ import { Platform } from 'react-native'
  * sonrasında okumalar senkron (render sırasında kullanılabilir).
  * Token native'de Keychain/Keystore'da (SecureStore), web'de localStorage'da durur.
  */
-const KEYS = ['diecut.locale', 'diecut.theme', 'diecut.guestId', 'diecut.onboarded', 'diecut.unit', 'diecut.autoRotate'] as const
+const KEYS = ['diecut.locale', 'diecut.theme', 'diecut.guestId', 'diecut.onboarded', 'diecut.unit', 'diecut.autoRotate', 'diecut.studioDraft'] as const
 const SECURE_KEYS = ['diecut.token'] as const
 
 export type StorageKey = (typeof KEYS)[number] | (typeof SECURE_KEYS)[number]

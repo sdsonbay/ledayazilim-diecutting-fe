@@ -5,7 +5,7 @@ import Animated, { FadeIn, FadeOut } from 'react-native-reanimated'
 import { useAuth } from '../../auth/AuthContext'
 import type { ImposeState } from '../../hooks/useImpose'
 import { useI18n } from '../../i18n/LocaleContext'
-import type { DielineResponse, PrintFinish, PrintTransform } from '../../lib/types'
+import type { DielineResponse, Point, PrintFinish, PrintTransform } from '../../lib/types'
 import { useTheme } from '../../theme/ThemeContext'
 import { radius } from '../../theme/tokens'
 import { DielineCanvas, DielineLegend } from '../dieline/DielineCanvas'
@@ -38,12 +38,14 @@ export interface StageProps {
   empty?: React.ReactNode
   /** Verilirse 2D'de baskı tuval üzerinde düzenlenir. */
   onPrintChange?: (next: PrintTransform) => void
+  /** 2D'de vurgulanan kırım ekseni. */
+  highlight?: [Point, Point] | null
   /** 3D'de başlangıç malzemesi (oluklu şablonlar için oluklu mukavva). */
   defaultSubstrate?: Substrate
 }
 
 /** Bıçak izi sahnesi: 2D / 3D / tabaka; üstte mod ve indirme, altta ölçüler ve katlama. */
-export const Stage = ({ dieline, mode, onMode, busy, printUri, printTransform, printFinish, impose, onExport, style, empty, defaultSubstrate = 'white', onPrintChange }: StageProps) => {
+export const Stage = ({ dieline, mode, onMode, busy, printUri, printTransform, printFinish, impose, onExport, style, empty, defaultSubstrate = 'white', onPrintChange, highlight }: StageProps) => {
   const { colors } = useTheme()
   const { t } = useI18n()
   const { loggedIn } = useAuth()
@@ -139,6 +141,7 @@ export const Stage = ({ dieline, mode, onMode, busy, printUri, printTransform, p
               printTransform={printTransform}
               formatLength={showDims ? units.format : undefined}
               onPrintChange={onPrintChange}
+              highlight={highlight}
             />
             {showHint ? (
               <Animated.View entering={FadeIn.duration(200)} exiting={FadeOut.duration(400)} pointerEvents="none" style={[styles.hint, { backgroundColor: colors.glass }]}>

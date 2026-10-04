@@ -1,6 +1,7 @@
 import { memo, useMemo } from 'react'
 import { StyleSheet, View } from 'react-native'
 import Svg, { ClipPath, Defs, G, Image as SvgImage, Line, Path, Pattern, Rect, Text as SvgText } from 'react-native-svg'
+import { stretchStops } from '../../lib/dielineEdit'
 import { SVG_MARGIN_MM, printImageSvgRect, printImageSvgTransform } from '../../lib/printMap'
 import type { DielineResponse, PathCommand, Point, PrintTransform } from '../../lib/types'
 import { useTheme } from '../../theme/ThemeContext'
@@ -54,6 +55,7 @@ export const DielineCanvas = memo(function DielineCanvas({
   interactive = true,
   formatLength,
   onPrintChange,
+  highlight,
 }: {
   dieline: DielineResponse
   printUri?: string | null
@@ -64,6 +66,8 @@ export const DielineCanvas = memo(function DielineCanvas({
   formatLength?: (mm: number) => string
   /** Verilirse baskı tuval üzerinde taşınır / boyutlandırılır / döndürülür. */
   onPrintChange?: (next: PrintTransform) => void
+  /** Vurgulanan kırım ekseni (düzenlemede seçili kırım). */
+  highlight?: [Point, Point] | null
 }) {
   const { colors } = useTheme()
   const { bounds } = dieline
@@ -94,25 +98,16 @@ export const DielineCanvas = memo(function DielineCanvas({
     [dieline.panels],
   )
 
-  // Düşey kırımların x konumları → üst kenarda panel genişlikleri.
-  const panelStops = useMemo(() => {
-    const xs = new Set<number>()
-    for (const p of dieline.paths ?? []) {
-      if (p.layer !== 'crease') continue
-      const pts = p.commands.filter((c): c is Extract<PathCommand, { x: number }> => 'x' in c)
-      if (pts.length === 2 && Math.abs(pts[0]!.x - pts[1]!.x) < 0.01 && Math.abs(pts[0]!.y - pts[1]!.y) > bounds.height * 0.2) {
-        xs.add(Math.round(pts[0]!.x * 10) / 10)
-      }
-    }
-    return [bounds.x, ...[...xs].sort((a, b) => a - b), bounds.x + bounds.width]
-  }, [dieline.paths, bounds.x, bounds.width, bounds.height])
+  // Kırım hatlarının konumları → üst ve sol kenarda bölge ölçüleri (düzenleme alanlarıyla aynı sıra).
+  const panelStops = useMemo(() => stretchStops(dieline, 'x'), [dieline])
+  const rowStops = useMemo(() => stretchStops(dieline, 'y'), [dieline])
 
   const styleOf = (layer: string): LayerStyle => {
     switch (layer) {
       case 'cut':
-        return { color: colors.accent, width: 1.6 }
+        return { color: colors.cut, width: 1.6 }
       case 'crease':
-        return { color: colors.crease, width: 1.2, dash: [6, 4] }
+        return { color: colors.crease, width: 1.4 }
       case 'perf':
         return { color: colors.ink, width: 1.1, dash: [2, 3] }
       case 'bleed':
@@ -128,6 +123,7 @@ export const DielineCanvas = memo(function DielineCanvas({
   const layerKeys = [...layers.keys()].sort((a, b) => order.indexOf(a) - order.indexOf(b))
 
   const toX = (x: number) => m - bounds.x + x
+  const toY = (y: number) => m + bounds.y + bounds.height - y
   const renderDimensions = (upp: number) => {
     if (!formatLength) return null
     const c = colors.muted
@@ -156,7 +152,8 @@ export const DielineCanvas = memo(function DielineCanvas({
         )}
       </G>
     )
-    const segs = panelStops.slice(1).map((x, i) => ({ a: panelStops[i]!, b: x })).filter((s) => s.b - s.a > bounds.width * 0.06)
+    const segs = panelStops.slice(1).map((x, i) => ({ a: panelStops[i]!, b: x })).filter((s) => s.b - s.a > bounds.width * 0.04)
+    const rowSegs = rowStops.slice(1).map((y, i) => ({ a: rowStops[i]!, b: y })).filter((s) => s.b - s.a > bounds.height * 0.04)
     return (
       <G>
         {arrow(left, yTop, right, yTop, 'w')}
@@ -172,6 +169,20 @@ export const DielineCanvas = memo(function DielineCanvas({
                 </SvgText>
               </G>
             ))
+          : null}
+        {rowSegs.length > 1
+          ? rowSegs.map((s, i) => {
+              const cy = (toY(s.a) + toY(s.b)) / 2
+              const cx = xLeft + 12 * upp
+              return (
+                <G key={`r${i}`}>
+                  <Line x1={left - 3 * upp} y1={toY(s.a)} x2={xLeft - tick} y2={toY(s.a)} stroke={colors.line} strokeWidth={sw} />
+                  <SvgText x={cx} y={cy} fontSize={fs * 0.85} fill={c} textAnchor="middle" fontFamily={fonts.medium} transform={`rotate(-90 ${cx} ${cy})`}>
+                    {formatLength(s.b - s.a)}
+                  </SvgText>
+                </G>
+              )
+            })
           : null}
         {arrow(xLeft, top, xLeft, bottom, 'h')}
         <SvgText
@@ -244,6 +255,18 @@ export const DielineCanvas = memo(function DielineCanvas({
               </G>
             )
           })}
+          {highlight ? (
+            <Line
+              x1={highlight[0].x}
+              y1={highlight[0].y}
+              x2={highlight[1].x}
+              y2={highlight[1].y}
+              stroke={colors.accent}
+              strokeOpacity={0.45}
+              strokeWidth={9 * upp}
+              strokeLinecap="round"
+            />
+          ) : null}
         </G>
       </Svg>
     )
@@ -269,11 +292,11 @@ export const DielineLegend = ({ labels }: { labels: { cut: string; crease: strin
   return (
     <View style={styles.legend}>
       <Svg width={22} height={6}>
-        <Path d="M1 3H21" stroke={colors.accent} strokeWidth={2} strokeLinecap="round" />
+        <Path d="M1 3H21" stroke={colors.cut} strokeWidth={2} strokeLinecap="round" />
       </Svg>
       <LegendText>{labels.cut}</LegendText>
       <Svg width={22} height={6}>
-        <Path d="M1 3H21" stroke={colors.crease} strokeWidth={1.6} strokeDasharray="5 3" strokeLinecap="round" />
+        <Path d="M1 3H21" stroke={colors.crease} strokeWidth={2} strokeLinecap="round" />
       </Svg>
       <LegendText>{labels.crease}</LegendText>
     </View>

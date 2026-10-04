@@ -98,6 +98,19 @@ export interface DielineResponse {
   rootPanel: string
   svg: string
   paths?: DielinePath[]
+  /** İçe aktarımda: tanınan parametrik şablon (yoksa null). */
+  match?: TemplateMatch | null
+}
+
+/** Dışarıdan gelen bıçak izinin eşleştiği şablon ve uydurulan ölçüler. */
+export interface TemplateMatch {
+  templateId: string
+  variables: Record<string, number | string | boolean>
+  /** Ortalama geometri sapması (mm). */
+  deviation: number
+  /** Çizgilerin 0.5 mm içinde örtüşen oranı (0..1). */
+  coverage: number
+  exact: boolean
 }
 
 export type PathCommand =

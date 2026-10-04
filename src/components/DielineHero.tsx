@@ -68,7 +68,7 @@ export const DielineHero = ({ height = 260 }: { height?: number }) => {
         <APath
           d={CUT}
           fill="none"
-          stroke={colors.accent}
+          stroke={colors.cut}
           strokeWidth={2}
           strokeLinejoin="round"
           strokeDasharray={`${CUT_LEN}`}

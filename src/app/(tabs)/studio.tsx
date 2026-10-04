@@ -1,23 +1,23 @@
 import { useLocalSearchParams } from 'expo-router'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { StyleSheet, View, useWindowDimensions } from 'react-native'
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated'
 import { ExportSheet } from '../../components/editor/ExportSheet'
 import { ImportDrop } from '../../components/ImportDrop'
 import { ImposePanel } from '../../components/editor/ImposePanel'
 import { Stage, type StageMode } from '../../components/editor/Stage'
-import { Button, Chip, IconButton, Input, Page, PageHeader, SectionTitle, Segmented, Text, Toggle, useFeedback, useIsWide, type IconName } from '../../components/ui'
+import { ImportResult } from '../../components/studio/ImportResult'
+import { Chip, Input, Page, PageHeader, SectionTitle, Segmented, Text, useFeedback, useIsWide } from '../../components/ui'
 import { useImpose } from '../../hooks/useImpose'
 import { apiErrorMessage } from '../../i18n/errors'
 import { useI18n } from '../../i18n/LocaleContext'
 import type { MessageKey } from '../../i18n/messages'
 import { api } from '../../lib/api'
 import { slimDieline } from '../../lib/impose'
-import type { DielineResponse } from '../../lib/types'
-import { DrawCanvas } from '../../studio/DrawCanvas'
-import { openTrayStrokes, strokesToSvg, type DrawTool, type Stroke } from '../../studio/drawGeometry'
+import type { DielineResponse, Point } from '../../lib/types'
+import { DrawEditor, type DrawStarter } from '../../studio/DrawEditor'
+import { openTray, shapesFromDieline } from '../../studio/drawDoc'
 import { useTheme } from '../../theme/ThemeContext'
-import { radius } from '../../theme/tokens'
 
 type Family = 'tuck' | 'straight' | 'tray' | 'sleeve' | 'hex' | 'auto' | 'snap' | 'tube'
 
@@ -37,21 +37,10 @@ const templateOf = (family: Family, sides: number): string => {
   return 'tube-hex'
 }
 
-const TOOLS: { id: DrawTool; icon: IconName; label: MessageKey }[] = [
-  { id: 'cut', icon: 'scissors', label: 'studio.toolCut' },
-  { id: 'crease', icon: 'minus', label: 'studio.toolCrease' },
-  { id: 'rect', icon: 'square', label: 'studio.toolRect' },
-  { id: 'roundrect', icon: 'credit-card', label: 'studio.toolRoundRect' },
-  { id: 'oval', icon: 'circle', label: 'studio.toolOval' },
-  { id: 'hole', icon: 'target', label: 'studio.toolHole' },
-  { id: 'poly', icon: 'hexagon', label: 'studio.toolPoly' },
-  { id: 'select', icon: 'mouse-pointer', label: 'studio.toolSelect' },
-]
-
 export default function StudioScreen() {
-  const { colors, scheme } = useTheme()
+  const { scheme } = useTheme()
   const { t, locale } = useI18n()
-  const { toast, confirm } = useFeedback()
+  const { toast } = useFeedback()
   const wide = useIsWide()
   const { height } = useWindowDimensions()
   const params = useLocalSearchParams<{ source?: string }>()
@@ -63,15 +52,10 @@ export default function StudioScreen() {
   const [busy, setBusy] = useState(false)
   const [mode, setMode] = useState<StageMode>('2d')
   const [exportOpen, setExportOpen] = useState(false)
-  // Çizim
-  const [strokes, setStrokes] = useState<Stroke[]>(() => openTrayStrokes(120, 80, 40))
-  const [tool, setTool] = useState<DrawTool>('cut')
-  const [grid, setGrid] = useState(true)
-  const [selected, setSelected] = useState<string | null>(null)
-  const undo = useRef<Stroke[][]>([])
-  const redo = useRef<Stroke[][]>([])
-  const [, force] = useState(0)
   const [drawing, setDrawing] = useState(false)
+  // İçe aktarılan / çizilen modelin ilk hali (düzenlemeleri geri almak için) ve tanınan şablon.
+  const [imported, setImported] = useState<DielineResponse | null>(null)
+  const [highlight, setHighlight] = useState<[Point, Point] | null>(null)
 
   const templateId = templateOf(family, sides)
   const variables: Record<string, unknown> =
@@ -99,43 +83,42 @@ export default function StudioScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source, templateId, dims.length, dims.width, dims.height])
 
-  const commit = (next: Stroke[]) => {
-    undo.current.push(strokes)
-    if (undo.current.length > 80) undo.current.shift()
-    redo.current = []
-    setStrokes(next)
-  }
-  const doUndo = () => {
-    const prev = undo.current.pop()
-    if (!prev) return
-    redo.current.push(strokes)
-    setStrokes(prev)
-    setSelected(null)
-    force((n) => n + 1)
-  }
-  const doRedo = () => {
-    const next = redo.current.pop()
-    if (!next) return
-    undo.current.push(strokes)
-    setStrokes(next)
-    force((n) => n + 1)
+  const acceptImport = (d: DielineResponse) => {
+    setImported(d)
+    setDieline(d)
+    setHighlight(null)
+    setMode('2d')
   }
 
-  const convert = async () => {
-    if (strokes.length === 0) {
-      toast(t('studio.empty'), 'error')
-      return
-    }
+  const convert = async (svg: string) => {
     setBusy(true)
     try {
-      setDieline(await api.importSvg(strokesToSvg(strokes)))
-      setMode('2d')
+      acceptImport(await api.importSvg(svg))
     } catch (err) {
       toast(apiErrorMessage(err, locale, 'import.fail', t), 'error')
     } finally {
       setBusy(false)
     }
   }
+
+  const fromTemplate = async (id: string, vars: Record<string, unknown>) => {
+    try {
+      return shapesFromDieline(await api.generate(id, vars))
+    } catch (err) {
+      toast(apiErrorMessage(err, locale, 'editor.drawFail', t), 'error')
+      return null
+    }
+  }
+  const starters: DrawStarter[] = [
+    { id: 'tray', label: t('draw.start.tray'), icon: 'inbox', load: () => Promise.resolve(openTray(dims.length, dims.width, dims.height)) },
+    { id: 'tuck', label: t('draw.start.tuck'), icon: 'package', load: () => fromTemplate('ecma-a20-20', dims) },
+    { id: 'mailer', label: t('draw.start.mailer'), icon: 'archive', load: () => fromTemplate('fefco-0427', dims) },
+  ]
+
+  const importPanel =
+    imported && dieline && source !== 'param' ? (
+      <ImportResult original={imported} dieline={dieline} match={imported.match} onChange={setDieline} onHighlight={setHighlight} />
+    ) : null
 
   const dimInput = (key: 'length' | 'width' | 'height', label: string) => (
     <View style={{ flex: 1, minWidth: 90 }}>
@@ -162,14 +145,7 @@ export default function StudioScreen() {
   const controls =
     source === 'file' ? (
       <Animated.View key="file" entering={FadeIn.duration(200)}>
-        <ImportDrop
-          busy={busy}
-          setBusy={setBusy}
-          onDieline={(d) => {
-            setDieline(d)
-            setMode('2d')
-          }}
-        />
+        <ImportDrop busy={busy} setBusy={setBusy} onDieline={acceptImport} />
       </Animated.View>
     ) : source === 'param' ? (
       <Animated.View key="param" entering={FadeIn.duration(200)} style={{ gap: 16 }}>
@@ -200,54 +176,13 @@ export default function StudioScreen() {
       </Animated.View>
     ) : (
       <Animated.View key="draw" entering={FadeIn.duration(200)} style={{ gap: 12 }}>
-        <View style={styles.wrap}>
-          {TOOLS.map((tl) => (
-            <Chip key={tl.id} label={t(tl.label)} icon={tl.icon} selected={tool === tl.id} onPress={() => setTool(tl.id)} />
-          ))}
-        </View>
-        <View style={[styles.canvas, { height: wide ? Math.min(height - 360, 560) : 300, borderColor: colors.line }]}>
-          <DrawCanvas
-            strokes={strokes}
-            onCommit={commit}
-            tool={tool}
-            grid={grid}
-            cornerRadius={12}
-            polySides={6}
-            selectedId={selected}
-            onSelect={setSelected}
-            onInteract={setDrawing}
-          />
-        </View>
-        <View style={styles.toolbar}>
-          <IconButton icon="corner-up-left" label={t('studio.undo')} onPress={doUndo} />
-          <IconButton icon="corner-up-right" label={t('studio.redo')} onPress={doRedo} />
-          <IconButton
-            icon="trash-2"
-            label={t('studio.toolDelete')}
-            onPress={() => {
-              if (!selected) return
-              commit(strokes.filter((s) => s.id !== selected))
-              setSelected(null)
-            }}
-          />
-          <IconButton
-            icon="x-square"
-            label={t('studio.clear')}
-            onPress={async () => {
-              const ok = await confirm({ title: t('studio.clearConfirm'), confirmLabel: t('studio.clear'), cancelLabel: t('common.cancel'), destructive: true })
-              if (ok) commit([])
-            }}
-          />
-          <View style={{ flex: 1 }} />
-          <Toggle value={grid} onChange={setGrid} label={t('studio.snap')} />
-        </View>
-        <Text variant="small" tone="muted">
-          {t(`studio.hint${tool === 'cut' ? 'Cut' : tool === 'crease' ? 'Crease' : tool === 'select' ? 'Select' : tool === 'hole' ? 'Hole' : tool === 'poly' ? 'Poly' : 'Shape'}` as MessageKey)}
-        </Text>
-        <View style={styles.row}>
-          <Button label={t('studio.addTray')} variant="outline" icon="plus-square" onPress={() => commit([...strokes, ...openTrayStrokes(dims.length, dims.width, dims.height)])} />
-          <Button label={busy ? t('studio.building') : t('studio.to3d')} icon="box" onPress={() => void convert()} loading={busy} />
-        </View>
+        <DrawEditor
+          onConvert={(svg) => void convert(svg)}
+          converting={busy}
+          starters={starters}
+          onInteract={setDrawing}
+          height={wide ? Math.max(420, Math.min(height - 380, 620)) : 380}
+        />
       </Animated.View>
     )
 
@@ -258,6 +193,7 @@ export default function StudioScreen() {
       onMode={setMode}
       busy={busy}
       impose={impose}
+      highlight={highlight}
       onExport={() => setExportOpen(true)}
       style={wide ? { flex: 1, minHeight: 520 } : { height: Math.max(340, height * 0.48) }}
       empty={
@@ -282,6 +218,8 @@ export default function StudioScreen() {
           onChange={(v) => {
             setSource(v)
             setDieline(null)
+            setImported(null)
+            setHighlight(null)
           }}
           options={[
             { value: 'param', label: t('studio.modeParam'), icon: 'package' },
@@ -291,8 +229,9 @@ export default function StudioScreen() {
         />
       </View>
       <View style={wide ? styles.wideRow : { gap: 24 }}>
-        <Animated.View entering={FadeInDown.springify().damping(20)} style={wide ? { width: source === 'draw' ? '52%' : 380, gap: 16 } : { gap: 16 }}>
+        <Animated.View entering={FadeInDown.springify().damping(20)} style={wide ? { width: source === 'draw' ? '58%' : 400, gap: 16 } : { gap: 16 }}>
           {controls}
+          {importPanel}
           {mode === 'impose' ? <ImposePanel impose={impose} /> : null}
         </Animated.View>
         <View style={wide ? { flex: 1 } : null}>
@@ -319,7 +258,5 @@ const styles = StyleSheet.create({
   wrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   row: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   wideRow: { flexDirection: 'row', gap: 28, alignItems: 'flex-start' },
-  canvas: { borderRadius: radius.lg, borderWidth: StyleSheet.hairlineWidth * 2, overflow: 'hidden' },
-  toolbar: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   empty: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 6, padding: 24 },
 })

@@ -196,68 +196,91 @@ const placeGrid = (
   return out
 }
 
-const betterPack = (a: ImposePlacement[], b: ImposePlacement[]) => {
-  if (a.length !== b.length) return a.length > b.length
-  const mixedA = a.some((p) => p.rotation !== a[0]?.rotation)
-  const mixedB = b.some((p) => p.rotation !== b[0]?.rotation)
-  if (mixedA !== mixedB) return !mixedA
-  return a.filter((p) => p.rotation === 0).length > b.filter((p) => p.rotation === 0).length
+/** Yerleşim özeti: arama yalnız sayar; yerleşimler en iyi seçimden sonra bir kez üretilir (API ile aynı). */
+interface PackScore {
+  n: number
+  zero: number
+  mask: number
+  choice: { rot: 0 | 90; cols: number; rows: number; right: boolean; top: boolean } | null
 }
 
+const EMPTY_SCORE: PackScore = { n: 0, zero: 0, mask: 0, choice: null }
+const SPAN_LIMIT = 8
+
+const betterScore = (a: PackScore, b: PackScore): boolean => {
+  if (a.n !== b.n) return a.n > b.n
+  const mixedA = a.mask === 3
+  const mixedB = b.mask === 3
+  if (mixedA !== mixedB) return !mixedA
+  return a.zero > b.zero
+}
+
+/**
+ * Guillotine: ana ızgara + sağ/üst kalan şeritte diğer yön. Alt problemler önbellekten gelir
+ * (eski yinelemeli arama küçük kutu + büyük tabakada arayüzü dakikalarca dondurabiliyordu).
+ */
 const packRect = (
   rect: { x: number; y: number; width: number; height: number },
   bounds: { width: number; height: number },
   gapX: number,
   gapY: number,
   allowed: readonly (0 | 90)[],
-  depth: number,
 ): ImposePlacement[] => {
-  if (depth > 4 || rect.width <= EPS || rect.height <= EPS) return []
-  let best: ImposePlacement[] = []
+  const memo = new Map<string, PackScore>()
   const minSide = Math.min(bounds.width, bounds.height)
-  for (const rot of allowed) {
-    const { w: pw, h: ph } = pieceSize(bounds, rot)
-    const { cols: maxC, rows: maxR } = packGrid(rect.width, rect.height, pw, ph, gapX, gapY)
-    if (maxC === 0 || maxR === 0) continue
-    for (let cols = maxC; cols >= 1; cols--) {
-      for (let rows = maxR; rows >= 1; rows--) {
-        if (cols !== maxC && rows !== maxR) continue
-        const nestedW = cols * pw + (cols - 1) * gapX
-        const nestedH = rows * ph + (rows - 1) * gapY
-        const placed = placeGrid(rect.x, rect.y, cols, rows, pw, ph, gapX, gapY, rot)
-        const rest: ImposePlacement[] = []
-        const rightW = rect.width - nestedW - (nestedW > 0 ? gapX : 0)
-        if (rightW + EPS >= minSide) {
-          rest.push(
-            ...packRect(
-              { x: rect.x + nestedW + (nestedW > 0 ? gapX : 0), y: rect.y, width: rightW, height: rect.height },
-              bounds,
-              gapX,
-              gapY,
-              allowed,
-              depth + 1,
-            ),
-          )
+  const restOf = (w: number, h: number, pw: number, ph: number, cols: number, rows: number) => {
+    const nestedW = cols * pw + (cols - 1) * gapX
+    const nestedH = rows * ph + (rows - 1) * gapY
+    const rightW = w - nestedW - (nestedW > 0 ? gapX : 0)
+    const topH = h - nestedH - (nestedH > 0 ? gapY : 0)
+    return { nestedW, nestedH, rightW, topH, right: rightW + EPS >= minSide, top: topH + EPS >= minSide && nestedW > EPS }
+  }
+  const score = (w: number, h: number, depth: number): PackScore => {
+    if (depth > 4 || w <= EPS || h <= EPS) return EMPTY_SCORE
+    const key = `${Math.round(w * 1e6)}x${Math.round(h * 1e6)}@${depth}`
+    const hit = memo.get(key)
+    if (hit) return hit
+    let best = EMPTY_SCORE
+    let found = false
+    for (const rot of allowed) {
+      const { w: pw, h: ph } = pieceSize(bounds, rot)
+      const { cols: maxC, rows: maxR } = packGrid(w, h, pw, ph, gapX, gapY)
+      if (maxC === 0 || maxR === 0) continue
+      for (let cols = maxC; cols >= Math.max(1, maxC - SPAN_LIMIT); cols--) {
+        for (let rows = maxR; rows >= Math.max(1, maxR - SPAN_LIMIT); rows--) {
+          if (cols !== maxC && rows !== maxR) continue
+          const r = restOf(w, h, pw, ph, cols, rows)
+          const right = r.right ? score(r.rightW, h, depth + 1) : EMPTY_SCORE
+          const top = r.top ? score(r.nestedW, r.topH, depth + 1) : EMPTY_SCORE
+          const placed = cols * rows
+          const next: PackScore = {
+            n: placed + right.n + top.n,
+            zero: (rot === 0 ? placed : 0) + right.zero + top.zero,
+            mask: (rot === 0 ? 1 : 2) | right.mask | top.mask,
+            choice: { rot, cols, rows, right: r.right, top: r.top },
+          }
+          if (!found || betterScore(next, best)) {
+            best = next
+            found = true
+          }
         }
-        const topH = rect.height - nestedH - (nestedH > 0 ? gapY : 0)
-        if (topH + EPS >= minSide && nestedW > EPS) {
-          rest.push(
-            ...packRect(
-              { x: rect.x, y: rect.y + nestedH + (nestedH > 0 ? gapY : 0), width: nestedW, height: topH },
-              bounds,
-              gapX,
-              gapY,
-              allowed,
-              depth + 1,
-            ),
-          )
-        }
-        const next = placed.concat(rest)
-        if (best.length === 0 || betterPack(next, best)) best = next
       }
     }
+    memo.set(key, best)
+    return best
   }
-  return best
+  const build = (r: { x: number; y: number; width: number; height: number }, depth: number): ImposePlacement[] => {
+    if (depth > 4 || r.width <= EPS || r.height <= EPS) return []
+    const choice = score(r.width, r.height, depth).choice
+    if (!choice) return []
+    const { w: pw, h: ph } = pieceSize(bounds, choice.rot)
+    const rest = restOf(r.width, r.height, pw, ph, choice.cols, choice.rows)
+    const out = placeGrid(r.x, r.y, choice.cols, choice.rows, pw, ph, gapX, gapY, choice.rot)
+    if (choice.right) out.push(...build({ x: r.x + rest.nestedW + (rest.nestedW > 0 ? gapX : 0), y: r.y, width: rest.rightW, height: r.height }, depth + 1))
+    if (choice.top) out.push(...build({ x: r.x, y: r.y + rest.nestedH + (rest.nestedH > 0 ? gapY : 0), width: rest.nestedW, height: rest.topH }, depth + 1))
+    return out
+  }
+  return build(rect, 0)
 }
 
 const planSheet = (
@@ -266,7 +289,7 @@ const planSheet = (
   cfg: ImposePayload,
 ) => {
   const allowed: readonly (0 | 90)[] = cfg.rotation === 0 ? [0] : cfg.rotation === 90 ? [90] : [0, 90]
-  const placements = packRect(usable, bounds, cfg.gapX, cfg.gapY, allowed, 0)
+  const placements = packRect(usable, bounds, cfg.gapX, cfg.gapY, allowed)
   const alt0 = candidate(bounds, 0, usable.width, usable.height, cfg.gapX, cfg.gapY)
   const alt90 = candidate(bounds, 90, usable.width, usable.height, cfg.gapX, cfg.gapY)
   const primaryRot = placements[0]?.rotation ?? (cfg.rotation === 90 ? 90 : 0)

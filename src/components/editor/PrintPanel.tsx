@@ -1,7 +1,7 @@
 import * as ImagePicker from 'expo-image-picker'
 import { Image } from 'expo-image'
 import { useState } from 'react'
-import { Platform, StyleSheet, TextInput, View } from 'react-native'
+import { Platform, StyleSheet, View } from 'react-native'
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated'
 import { defaultPrintTransform } from '../../fold/printDefaults'
 import { useI18n } from '../../i18n/LocaleContext'
@@ -10,8 +10,8 @@ import { centerPrint, coverPrint, fitPrint, normalizeAngle, resetPrint, printSiz
 import { defaultPrintFinish, type PrintFinish, type PrintTransform } from '../../lib/types'
 import { useUnit } from '../../lib/units'
 import { useTheme } from '../../theme/ThemeContext'
-import { fonts, radius } from '../../theme/tokens'
-import { Button, Divider, Icon, ScalePressable, SectionTitle, Slider, Text, Toggle, type IconName } from '../ui'
+import { radius } from '../../theme/tokens'
+import { Button, Divider, Icon, NumberBox, ScalePressable, SectionTitle, Slider, Text, Toggle, type IconName } from '../ui'
 
 export interface PrintArtwork {
   /** Görüntüleme URI'si (file://, blob:, data:). */
@@ -186,46 +186,6 @@ const Action = ({ icon, label, onPress }: { icon: IconName; label: string; onPre
   )
 }
 
-/** Küçük sayı kutusu: yazarken taslak tutar, odak kaybında / Enter'da işler. */
-const NumberBox = ({ label, unit, value, onCommit }: { label: string; unit: string; value: number; onCommit: (v: number) => void }) => {
-  const { colors } = useTheme()
-  const [draft, setDraft] = useState<string | null>(null)
-  const [focused, setFocused] = useState(false)
-  const text = draft ?? String(value)
-  const commit = () => {
-    const n = Number(text.replace(',', '.'))
-    setDraft(null)
-    if (Number.isFinite(n) && n !== value) onCommit(n)
-  }
-  return (
-    <View style={styles.numberCell}>
-      <Text variant="small" tone="muted" numberOfLines={1}>
-        {label}
-      </Text>
-      <View style={[styles.numberBox, { backgroundColor: colors.surfaceAlt, borderColor: focused ? colors.ink : 'transparent' }]}>
-        <TextInput
-          value={text}
-          onChangeText={setDraft}
-          onFocus={() => setFocused(true)}
-          onBlur={() => {
-            setFocused(false)
-            commit()
-          }}
-          onSubmitEditing={commit}
-          keyboardType="numbers-and-punctuation"
-          returnKeyType="done"
-          selectTextOnFocus
-          accessibilityLabel={label}
-          style={[styles.numberInput, { color: colors.ink }, { outlineStyle: 'none' } as object]}
-        />
-        <Text variant="small" tone="muted">
-          {unit}
-        </Text>
-      </View>
-    </View>
-  )
-}
-
 const Range = ({
   label,
   value,
@@ -271,8 +231,5 @@ const styles = StyleSheet.create({
   actions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   action: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: radius.pill },
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
-  numberCell: { flexBasis: '45%', flexGrow: 1, gap: 4 },
-  numberBox: { flexDirection: 'row', alignItems: 'center', height: 38, borderRadius: radius.md, borderWidth: 1.5, paddingHorizontal: 10, gap: 6 },
-  numberInput: { flex: 1, minWidth: 0, fontFamily: fonts.semibold, fontSize: 15, paddingVertical: 4 },
   swatch: { width: 30, height: 30, borderRadius: 15, borderWidth: 2 },
 })
