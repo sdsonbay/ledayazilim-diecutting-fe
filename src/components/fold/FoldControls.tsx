@@ -6,7 +6,7 @@ import { useI18n } from '../../i18n/LocaleContext'
 import type { MessageKey } from '../../i18n/messages'
 import { useTheme } from '../../theme/ThemeContext'
 import { radius } from '../../theme/tokens'
-import { IconButton, ScalePressable, Slider, Text } from '../ui'
+import { Icon, IconButton, ScalePressable, Slider, Text } from '../ui'
 
 const STEP_LABEL: Record<FoldStep['kind'], MessageKey> = {
   body: 'fold.step.body',
@@ -42,6 +42,8 @@ export const FoldControls = ({
   onLight,
   onSnapshot,
   onGlb,
+  autoRotate,
+  onAutoRotate,
 }: {
   steps: FoldStep[]
   progress: number
@@ -56,6 +58,8 @@ export const FoldControls = ({
   onLight: (v: number) => void
   onSnapshot: () => void
   onGlb?: () => void
+  autoRotate: boolean
+  onAutoRotate: (v: boolean) => void
 }) => {
   const { colors } = useTheme()
   const { t } = useI18n()
@@ -110,6 +114,7 @@ export const FoldControls = ({
             {t(`fold.substrate.${substrate}` as MessageKey)}
           </Text>
         </View>
+        <Checkbox label={t('fold.autoRotate')} value={autoRotate} onChange={onAutoRotate} />
         {Platform.OS === 'web' ? (
           <View style={{ width: 96 }}>
             <Slider value={light} min={0.35} max={1.6} step={0.01} onChange={onLight} accessibilityLabel={t('editor.light')} />
@@ -119,6 +124,28 @@ export const FoldControls = ({
         {onGlb ? <IconButton icon="box" label={t('fold.glb')} onPress={onGlb} size={34} /> : null}
       </View>
     </View>
+  )
+}
+
+const Checkbox = ({ label, value, onChange }: { label: string; value: boolean; onChange: (v: boolean) => void }) => {
+  const { colors } = useTheme()
+  return (
+    <ScalePressable
+      accessibilityRole="checkbox"
+      accessibilityState={{ checked: value }}
+      accessibilityLabel={label}
+      onPress={() => onChange(!value)}
+      haptic
+      scaleTo={0.95}
+      style={styles.check}
+    >
+      <View style={[styles.box, { borderColor: value ? colors.accent : colors.lineStrong, backgroundColor: value ? colors.accent : 'transparent' }]}>
+        {value ? <Icon name="check" size={12} color="#FFFFFF" /> : null}
+      </View>
+      <Text variant="small" tone="soft" numberOfLines={1}>
+        {label}
+      </Text>
+    </ScalePressable>
   )
 }
 
@@ -145,4 +172,6 @@ const styles = StyleSheet.create({
   bar: { height: 3, borderRadius: radius.pill },
   swatches: { flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 },
   swatch: { width: 22, height: 22, borderRadius: 11, borderWidth: 2 },
+  check: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  box: { width: 18, height: 18, borderRadius: 5, borderWidth: 1.5, alignItems: 'center', justifyContent: 'center' },
 })

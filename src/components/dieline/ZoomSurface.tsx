@@ -22,6 +22,7 @@ export const ZoomSurface = ({
   children,
   resetKey,
   interactive = true,
+  gestures = true,
 }: {
   /** İçeriğin tam görünümü (birim cinsinden). */
   content: ViewBox
@@ -30,6 +31,8 @@ export const ZoomSurface = ({
   /** Değişince görünüm tam boy'a döner. */
   resetKey?: string
   interactive?: boolean
+  /** false: dokunma/sürükleme içeriğe bırakılır (ör. baskı düzenleme); tekerlekle yakınlaşma sürer. */
+  gestures?: boolean
 }) => {
   const [size, setSize] = useState({ width: 0, height: 0 })
   const contentKey = `${resetKey ?? ''}|${content.x}|${content.y}|${content.w}|${content.h}`
@@ -82,8 +85,9 @@ export const ZoomSurface = ({
     runOnJS(commit)(s, x, y)
   }
 
+  const touch = interactive && gestures
   const pinch = Gesture.Pinch()
-    .enabled(interactive)
+    .enabled(touch)
     .onStart(() => {
       saved.value = { s: scale.value, x: tx.value, y: ty.value }
     })
@@ -98,7 +102,7 @@ export const ZoomSurface = ({
     .onEnd(finish)
 
   const pan = Gesture.Pan()
-    .enabled(interactive)
+    .enabled(touch)
     .minPointers(1)
     .maxPointers(2)
     .onStart(() => {
@@ -111,7 +115,7 @@ export const ZoomSurface = ({
     .onEnd(finish)
 
   const doubleTap = Gesture.Tap()
-    .enabled(interactive)
+    .enabled(touch)
     .numberOfTaps(2)
     .onEnd(() => {
       runOnJS(reset)()

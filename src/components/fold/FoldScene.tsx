@@ -20,6 +20,12 @@ export interface OrbitState {
   touchedAt: number
 }
 
+/** Varsayılan bakış (izometrik); yaw/pitch bu açılara göre görelidir. */
+export const BASE_YAW = 0.62
+export const BASE_PITCH = 0.36
+/** Kamera tam üstten / tam alttan bakmaya yakın gidebilir (kutunun altı görülebilsin). */
+export const PITCH_LIMIT = 1.48
+
 /** Katlanma sürücüsü: sahne `value`yu `target`a `speed` (birim/sn) hızla taşır. */
 export interface FoldDriver {
   target: number
@@ -34,11 +40,14 @@ const PanelMesh = ({
   assets,
   finish,
   substrate,
+  uvVersion,
 }: {
   data: FoldMeshData
   assets: LoadedPrintAssets
   finish: PrintFinish
   substrate: Substrate
+  /** Baskı UV'leri yerinde yeniden yazılınca değişir → geometri yeniden kurulur. */
+  uvVersion: object
 }) => {
   const mesh = useMemo(() => {
     const materials = createPanelMaterials({
@@ -53,7 +62,8 @@ const PanelMesh = ({
     m.castShadow = true
     m.receiveShadow = true
     return m
-  }, [data, assets, finish, substrate])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- uvVersion: data.uvs yerinde güncellendi
+  }, [data, assets, finish, substrate, uvVersion])
   useEffect(
     () => () => {
       mesh.geometry.dispose()
@@ -73,12 +83,14 @@ const FoldBranch = ({
   assets,
   finish,
   substrate,
+  uvVersion,
 }: {
   node: FoldNode
   driver: MutableRefObject<FoldDriver>
   assets: LoadedPrintAssets
   finish: PrintFinish
   substrate: Substrate
+  uvVersion: object
 }) => {
   const pivotRefs = useRef<(THREE.Group | null)[]>([])
   useFrame(() => {
@@ -91,12 +103,12 @@ const FoldBranch = ({
   return (
     <group>
       {node.meshes.map((mesh) => (
-        <PanelMesh key={mesh.id} data={mesh} assets={assets} finish={finish} substrate={substrate} />
+        <PanelMesh key={mesh.id} data={mesh} assets={assets} finish={finish} substrate={substrate} uvVersion={uvVersion} />
       ))}
       {node.joints.map((joint, i) => (
         <group key={joint.id} ref={(el) => void (pivotRefs.current[i] = el)} position={joint.hinge}>
           <group position={joint.childShift}>
-            <FoldBranch node={joint.node} driver={driver} assets={assets} finish={finish} substrate={substrate} />
+            <FoldBranch node={joint.node} driver={driver} assets={assets} finish={finish} substrate={substrate} uvVersion={uvVersion} />
           </group>
         </group>
       ))}
@@ -148,8 +160,8 @@ const OrbitCamera = ({
     const spanNow = open.span + (closed.span - open.span) * f
     const fit = spanNow / 2 / Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))
     const radius = (fit * 1.55) / Math.min(1, camera.aspect || 1)
-    const yaw = 0.62 + s.yaw
-    const pitch = Math.min(1.35, Math.max(-0.05, 0.36 + s.pitch))
+    const yaw = BASE_YAW + s.yaw
+    const pitch = Math.min(PITCH_LIMIT, Math.max(-PITCH_LIMIT, BASE_PITCH + s.pitch))
     const r = radius * s.zoom
     camera.position.set(
       target.x + r * Math.cos(pitch) * Math.sin(yaw),
@@ -170,7 +182,7 @@ const Lights = ({ light, span }: { light: number; span: number }) => {
   const d = span * 1.6
   return (
     <>
-      <hemisphereLight args={[0xffffff, 0x9a948c, 0.75 + level * 0.6]} />
+      <hemisphereLight args={[0xffffff, 0xb9b3a9, 0.75 + level * 0.6]} />
       <directionalLight
         position={[span * 0.5, span * 2.8, span * 0.7]}
         intensity={0.6 + level * 0.9}
@@ -187,6 +199,8 @@ const Lights = ({ light, span }: { light: number; span: number }) => {
         shadow-radius={6}
       />
       <directionalLight position={[-span * 1.6, span * 0.9, span * 1.1]} intensity={0.35 + level * 0.3} />
+      {/* Alttan zayıf dolgu: kutunun tabanı alttan bakınca kapkara görünmesin. */}
+      <directionalLight position={[span * 0.4, -span * 2, -span * 0.6]} intensity={0.45 + level * 0.35} />
     </>
   )
 }
@@ -246,18 +260,19 @@ export const FoldScene = ({
   const [assets, setAssets] = useState<LoadedPrintAssets>(emptyAssets)
   const lastReport = useRef({ at: 0, value: -1 })
 
+  // Katlama planı yalnız bıçak izine bağlı; baskı değişince yalnız UV'ler yeniden yazılır.
+  const base = useMemo(() => buildFoldGraph(dieline), [dieline])
   const graph = useMemo(() => {
-    const g = buildFoldGraph(dieline)
-    prepareFoldGraphPrint(g.root, { bounds: dieline.bounds, printTransform, printFinish, printUrl: printUri })
-    return g
-  }, [dieline, printTransform, printFinish, printUri])
+    prepareFoldGraphPrint(base.root, { bounds: dieline.bounds, printTransform, printFinish, printUrl: printUri })
+    return { ...base }
+  }, [base, dieline.bounds, printTransform, printFinish, printUri])
 
   const rootRole = dieline.panels.find((p) => p.id === dieline.rootPanel)?.role ?? 'wall'
-  const layout = useMemo(() => layoutFold(graph.root, rootRole, graph.thickness), [graph, rootRole])
+  const layout = useMemo(() => layoutFold(base.root, rootRole, base.thickness), [base, rootRole])
 
   useEffect(() => {
-    onSteps?.(graph.steps)
-  }, [graph, onSteps])
+    onSteps?.(base.steps)
+  }, [base, onSteps])
 
   useEffect(() => {
     let disposed = false
@@ -297,7 +312,7 @@ export const FoldScene = ({
     <>
       <Lights light={light} span={layout.frame.span} />
       <RestingGroup layout={layout} driver={driver}>
-        <FoldBranch node={graph.root} driver={driver} assets={assets} finish={printFinish} substrate={substrate} />
+        <FoldBranch node={graph.root} driver={driver} assets={assets} finish={printFinish} substrate={substrate} uvVersion={graph} />
       </RestingGroup>
       <mesh rotation-x={-Math.PI / 2} position={[0, -0.05, 0]} receiveShadow>
         <planeGeometry args={[layout.frame.span * 12, layout.frame.span * 12]} />

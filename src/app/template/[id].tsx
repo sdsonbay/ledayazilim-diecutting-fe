@@ -403,6 +403,7 @@ export default function EditorScreen() {
       printFinish={finish}
       impose={impose}
       onExport={() => setExportOpen(true)}
+      onPrintChange={tab === 'print' && artwork ? setTransform : undefined}
       defaultSubstrate={template.data?.materials[0] === 'corrugated' ? 'corrugated' : 'white'}
       style={wide ? { flex: 1 } : { height: Math.max(320, Math.min(height * 0.5, 520)) }}
     />

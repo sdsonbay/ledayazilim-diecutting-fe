@@ -3,13 +3,17 @@
  * R3F JSX öğeleri DOM özelliği değildir. */
 import { useEffect, useRef, type MutableRefObject } from 'react'
 import { Platform, StyleSheet, View } from 'react-native'
+import { useI18n } from '../../i18n/LocaleContext'
+import { useTheme } from '../../theme/ThemeContext'
+import { radius } from '../../theme/tokens'
+import { Icon, ScalePressable, Text } from '../ui'
 import { Gesture, GestureDetector } from 'react-native-gesture-handler'
 import * as THREE from 'three'
 import type { Substrate } from '../../fold/foldMaterials'
 import type { FoldStep } from '../../fold/foldModel'
 import { defaultPrintTransform } from '../../fold/printDefaults'
 import { defaultPrintFinish, type DielineResponse, type PrintFinish, type PrintTransform } from '../../lib/types'
-import { FoldScene, type FoldDriver, type OrbitState } from './FoldScene'
+import { BASE_PITCH, BASE_YAW, FoldScene, PITCH_LIMIT, type FoldDriver, type OrbitState } from './FoldScene'
 import { Canvas } from './r3f'
 import { snapshotCanvas } from './snapshot'
 
@@ -33,7 +37,27 @@ export interface FoldViewProps {
   onSteps?: (steps: FoldStep[]) => void
   onProgress?: (value: number) => void
   captureRef?: MutableRefObject<FoldCapture | null>
+  /** Ön / arka / üst / alt hazır bakış düğmeleri. */
+  viewControls?: boolean
 }
+
+// Sabit varsayılanlar: her render'da yeni nesne sahneyi (katlama grafiğini) baştan kurdururdu.
+const DEFAULT_TRANSFORM = defaultPrintTransform()
+const DEFAULT_FINISH = defaultPrintFinish()
+
+type ViewPreset = 'front' | 'back' | 'top' | 'bottom'
+
+/** Hazır bakışlar (mutlak yaw/pitch, radyan). */
+const PRESETS: Record<ViewPreset, { yaw: number; pitch: number }> = {
+  front: { yaw: 0, pitch: 0.12 },
+  back: { yaw: Math.PI, pitch: 0.12 },
+  top: { yaw: 0, pitch: PITCH_LIMIT },
+  bottom: { yaw: 0, pitch: -PITCH_LIMIT },
+}
+
+const PITCH_MIN = -PITCH_LIMIT - BASE_PITCH
+const PITCH_MAX = PITCH_LIMIT - BASE_PITCH
+const clampPitch = (p: number) => Math.min(PITCH_MAX, Math.max(PITCH_MIN, p))
 
 /** 3D katlama: sürükle → döndür, sıkıştır/tekerlek → yakınlaş. Web ve native aynı sahne. */
 export const FoldView = ({
@@ -44,14 +68,17 @@ export const FoldView = ({
   substrate = 'white',
   background,
   printUri,
-  printTransform = defaultPrintTransform(),
-  printFinish = defaultPrintFinish(),
+  printTransform = DEFAULT_TRANSFORM,
+  printFinish = DEFAULT_FINISH,
   autoRotate = true,
   interactive = true,
   onSteps,
   onProgress,
   captureRef,
+  viewControls = false,
 }: FoldViewProps) => {
+  const { colors } = useTheme()
+  const { t } = useI18n()
   const orbit = useRef<OrbitState>({ yaw: 0, pitch: 0, zoom: 1, touchedAt: 0 })
   // Düz dieline halinden başlar; açılışta hedefe doğru adım adım katlanır.
   const driver = useRef<FoldDriver>({ target: fold, speed, value: 0 })
@@ -71,12 +98,23 @@ export const FoldView = ({
   }
   const rotate = (dx: number, dy: number) => {
     orbit.current.yaw = start.current.yaw - dx * 0.008
-    orbit.current.pitch = start.current.pitch + dy * 0.006
+    orbit.current.pitch = clampPitch(start.current.pitch + dy * 0.006)
     orbit.current.touchedAt = Date.now()
   }
   const zoomTo = (scale: number) => {
     orbit.current.zoom = Math.min(2.4, Math.max(0.4, start.current.zoom / scale))
     orbit.current.touchedAt = Date.now()
+  }
+
+  /** Hazır bakışa geç: yaw en kısa yoldan döner (otomatik dönüşle biriken turlar atlanır). */
+  const goTo = (preset: ViewPreset | 'reset') => {
+    const o = orbit.current
+    const target = preset === 'reset' ? { yaw: 0, pitch: 0 } : { yaw: PRESETS[preset].yaw - BASE_YAW, pitch: PRESETS[preset].pitch - BASE_PITCH }
+    const turns = Math.round((o.yaw - target.yaw) / (Math.PI * 2))
+    o.yaw = target.yaw + turns * Math.PI * 2
+    o.pitch = clampPitch(target.pitch)
+    if (preset === 'reset') o.zoom = 1
+    o.touchedAt = Date.now()
   }
 
   // Kamera durumu JS tarafındaki ref'te; jestler JS iş parçacığında çalışır.
@@ -136,6 +174,20 @@ export const FoldView = ({
             onProgress={onProgress}
           />
         </Canvas>
+        {viewControls && interactive ? (
+          <View style={[styles.views, { backgroundColor: colors.glass, borderColor: colors.line }]}>
+            {(['front', 'back', 'top', 'bottom'] as const).map((v) => (
+              <ScalePressable key={v} accessibilityRole="button" accessibilityLabel={t(`fold.view.${v}`)} onPress={() => goTo(v)} scaleTo={0.92} style={styles.viewBtn}>
+                <Text variant="smallStrong" tone="soft" style={{ fontSize: 12 }}>
+                  {t(`fold.view.${v}`)}
+                </Text>
+              </ScalePressable>
+            ))}
+            <ScalePressable accessibilityRole="button" accessibilityLabel={t('fold.view.reset')} onPress={() => goTo('reset')} scaleTo={0.92} style={styles.viewBtn}>
+              <Icon name="maximize" size={13} color={colors.inkSoft} />
+            </ScalePressable>
+          </View>
+        ) : null}
       </View>
     </GestureDetector>
   )
@@ -144,4 +196,16 @@ export const FoldView = ({
 const styles = StyleSheet.create({
   host: { flex: 1, overflow: 'hidden' },
   canvas: { flex: 1 },
+  views: {
+    position: 'absolute',
+    top: 10,
+    right: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: radius.pill,
+    borderWidth: StyleSheet.hairlineWidth * 2,
+    paddingHorizontal: 4,
+    paddingVertical: 2,
+  },
+  viewBtn: { paddingHorizontal: 9, paddingVertical: 6, borderRadius: radius.pill },
 })

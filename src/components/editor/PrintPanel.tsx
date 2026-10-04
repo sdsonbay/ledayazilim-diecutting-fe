@@ -1,15 +1,17 @@
 import * as ImagePicker from 'expo-image-picker'
 import { Image } from 'expo-image'
 import { useState } from 'react'
-import { Platform, StyleSheet, View } from 'react-native'
+import { Platform, StyleSheet, TextInput, View } from 'react-native'
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated'
 import { defaultPrintTransform } from '../../fold/printDefaults'
 import { useI18n } from '../../i18n/LocaleContext'
 import type { LocalFile } from '../../lib/api'
+import { centerPrint, coverPrint, fitPrint, normalizeAngle, resetPrint, printSize, SCALE_MAX, SCALE_MIN, withPrintWidth, withScale } from '../../lib/printMap'
 import { defaultPrintFinish, type PrintFinish, type PrintTransform } from '../../lib/types'
+import { useUnit } from '../../lib/units'
 import { useTheme } from '../../theme/ThemeContext'
-import { radius } from '../../theme/tokens'
-import { Button, Divider, ScalePressable, SectionTitle, Slider, Text, Toggle } from '../ui'
+import { fonts, radius } from '../../theme/tokens'
+import { Button, Divider, Icon, ScalePressable, SectionTitle, Slider, Text, Toggle, type IconName } from '../ui'
 
 export interface PrintArtwork {
   /** Görüntüleme URI'si (file://, blob:, data:). */
@@ -39,8 +41,13 @@ export const PrintPanel = ({
 }) => {
   const { t } = useI18n()
   const { colors } = useTheme()
+  const units = useUnit()
   const [picking, setPicking] = useState(false)
-  const span = bounds ? Math.max(bounds.width, bounds.height) : 200
+  const box = bounds ?? { width: 200, height: 200 }
+  const span = Math.max(box.width, box.height)
+  const size = printSize(box, transform)
+  const fromUnit = (v: number) => units.fromDisplay(v)
+  const toUnit = (mm: number) => Number(units.toDisplay(mm).toFixed(units.unit === 'in' ? 2 : 1))
 
   const pick = async () => {
     setPicking(true)
@@ -51,7 +58,9 @@ export const PrintPanel = ({
       const mime = asset.mimeType ?? 'image/jpeg'
       const name = asset.fileName ?? `artwork.${mime.includes('png') ? 'png' : mime.includes('webp') ? 'webp' : 'jpg'}`
       onArtwork({ uri: asset.uri, upload: { uri: asset.uri, name, mimeType: mime, file: asset.file } })
-      onTransform(defaultPrintTransform())
+      // Görsel oranı korunur: ilk yerleşim bıçak izinin içine sığdırılmış ve ortalanmış.
+      const aspect = asset.width > 0 && asset.height > 0 ? asset.width / asset.height : undefined
+      onTransform({ ...defaultPrintTransform(), aspect })
     } finally {
       setPicking(false)
     }
@@ -87,9 +96,39 @@ export const PrintPanel = ({
 
       {artwork ? (
         <Animated.View entering={FadeInDown.springify().damping(20)} style={{ gap: 6 }}>
-          <Range label={t('editor.scale')} value={transform.scale} min={0.4} max={2.5} step={0.01} format={(v) => `${Math.round(v * 100)}%`} onChange={(v) => onTransform({ ...transform, scale: v })} />
-          <Range label={t('editor.offsetX')} value={transform.offsetX} min={-span / 2} max={span / 2} step={0.5} format={(v) => `${v.toFixed(1)} mm`} onChange={(v) => onTransform({ ...transform, offsetX: v })} />
-          <Range label={t('editor.offsetY')} value={transform.offsetY} min={-span / 2} max={span / 2} step={0.5} format={(v) => `${v.toFixed(1)} mm`} onChange={(v) => onTransform({ ...transform, offsetY: v })} />
+          <Text variant="small" tone="muted">
+            {t('editor.printCanvasHint')}
+          </Text>
+          <View style={styles.actions}>
+            <Action icon="minimize-2" label={t('editor.printFit')} onPress={() => onTransform(fitPrint(box, transform))} />
+            <Action icon="maximize-2" label={t('editor.printCover')} onPress={() => onTransform(coverPrint(box, transform))} />
+            <Action icon="crosshair" label={t('editor.printCenter')} onPress={() => onTransform(centerPrint(transform))} />
+            <Action icon="rotate-cw" label="90°" onPress={() => onTransform({ ...transform, rotation: normalizeAngle(Math.round(transform.rotation / 90) * 90 + 90) })} />
+          </View>
+          <View style={styles.grid}>
+            <NumberBox label={t('editor.printWidth')} unit={units.label} value={toUnit(size.width)} onCommit={(v) => {
+                if (v > 0) onTransform(withPrintWidth(box, transform, fromUnit(v)))
+              }} />
+            <NumberBox
+              label={t('editor.printHeight')}
+              unit={units.label}
+              value={toUnit(size.height)}
+              onCommit={(v) => {
+                if (v > 0) onTransform(withPrintWidth(box, transform, (fromUnit(v) * size.width) / Math.max(size.height, 1e-6)))
+              }}
+            />
+            <NumberBox label={t('editor.offsetX')} unit={units.label} value={toUnit(transform.offsetX)} onCommit={(v) => onTransform({ ...transform, offsetX: clamp(fromUnit(v), span) })} />
+            <NumberBox label={t('editor.offsetY')} unit={units.label} value={toUnit(transform.offsetY)} onCommit={(v) => onTransform({ ...transform, offsetY: clamp(fromUnit(v), span) })} />
+          </View>
+          <Range
+            label={t('editor.scale')}
+            value={transform.scale}
+            min={SCALE_MIN}
+            max={Math.min(SCALE_MAX, 4)}
+            step={0.01}
+            format={(v) => `${Math.round(v * 100)}%`}
+            onChange={(v) => onTransform(withScale(transform, v))}
+          />
           <Range label={t('editor.rotate')} value={transform.rotation} min={-180} max={180} step={1} format={(v) => `${Math.round(v)}°`} onChange={(v) => onTransform({ ...transform, rotation: v })} />
 
           <Divider />
@@ -125,7 +164,7 @@ export const PrintPanel = ({
               {t('editor.printNative')}
             </Text>
           ) : null}
-          <Button label={t('editor.reset')} variant="ghost" size="sm" icon="rotate-ccw" onPress={() => { onTransform(defaultPrintTransform()); onFinish(defaultPrintFinish()) }} />
+          <Button label={t('editor.reset')} variant="ghost" size="sm" icon="rotate-ccw" onPress={() => { onTransform(resetPrint(transform)); onFinish(defaultPrintFinish()) }} />
         </Animated.View>
       ) : null}
     </View>
@@ -133,6 +172,59 @@ export const PrintPanel = ({
 }
 
 const pct = (v: number) => `${Math.round(v * 100)}%`
+const clamp = (v: number, limit: number) => Math.min(limit, Math.max(-limit, v))
+
+const Action = ({ icon, label, onPress }: { icon: IconName; label: string; onPress: () => void }) => {
+  const { colors } = useTheme()
+  return (
+    <ScalePressable accessibilityRole="button" accessibilityLabel={label} onPress={onPress} haptic scaleTo={0.94} style={[styles.action, { backgroundColor: colors.surfaceAlt }]}>
+      <Icon name={icon} size={14} color={colors.ink} />
+      <Text variant="smallStrong" numberOfLines={1}>
+        {label}
+      </Text>
+    </ScalePressable>
+  )
+}
+
+/** Küçük sayı kutusu: yazarken taslak tutar, odak kaybında / Enter'da işler. */
+const NumberBox = ({ label, unit, value, onCommit }: { label: string; unit: string; value: number; onCommit: (v: number) => void }) => {
+  const { colors } = useTheme()
+  const [draft, setDraft] = useState<string | null>(null)
+  const [focused, setFocused] = useState(false)
+  const text = draft ?? String(value)
+  const commit = () => {
+    const n = Number(text.replace(',', '.'))
+    setDraft(null)
+    if (Number.isFinite(n) && n !== value) onCommit(n)
+  }
+  return (
+    <View style={styles.numberCell}>
+      <Text variant="small" tone="muted" numberOfLines={1}>
+        {label}
+      </Text>
+      <View style={[styles.numberBox, { backgroundColor: colors.surfaceAlt, borderColor: focused ? colors.ink : 'transparent' }]}>
+        <TextInput
+          value={text}
+          onChangeText={setDraft}
+          onFocus={() => setFocused(true)}
+          onBlur={() => {
+            setFocused(false)
+            commit()
+          }}
+          onSubmitEditing={commit}
+          keyboardType="numbers-and-punctuation"
+          returnKeyType="done"
+          selectTextOnFocus
+          accessibilityLabel={label}
+          style={[styles.numberInput, { color: colors.ink }, { outlineStyle: 'none' } as object]}
+        />
+        <Text variant="small" tone="muted">
+          {unit}
+        </Text>
+      </View>
+    </View>
+  )
+}
 
 const Range = ({
   label,
@@ -176,5 +268,11 @@ const styles = StyleSheet.create({
   thumbRow: { flexDirection: 'row', gap: 14, padding: 12, borderRadius: radius.lg, alignItems: 'center' },
   thumb: { width: 84, height: 84, borderRadius: radius.md },
   swatches: { flexDirection: 'row', gap: 10 },
+  actions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  action: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: radius.pill },
+  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  numberCell: { flexBasis: '45%', flexGrow: 1, gap: 4 },
+  numberBox: { flexDirection: 'row', alignItems: 'center', height: 38, borderRadius: radius.md, borderWidth: 1.5, paddingHorizontal: 10, gap: 6 },
+  numberInput: { flex: 1, minWidth: 0, fontFamily: fonts.semibold, fontSize: 15, paddingVertical: 4 },
   swatch: { width: 30, height: 30, borderRadius: 15, borderWidth: 2 },
 })

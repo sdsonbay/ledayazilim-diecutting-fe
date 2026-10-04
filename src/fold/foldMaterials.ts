@@ -40,7 +40,7 @@ export const createPanelMaterials = (opts: {
   const printed = opts.printable && opts.printMap
 
   const outer = new THREE.MeshPhysicalMaterial({
-    color: printed ? 0xffffff : opts.printable ? sub.outer : sub.inner,
+    color: opts.printable ? sub.outer : sub.inner,
     map: printed ? (opts.printMap ?? null) : null,
     roughness: sub.roughness,
     metalness: 0,
@@ -50,6 +50,8 @@ export const createPanelMaterials = (opts: {
     envMap: opts.envMap ?? null,
     envMapIntensity: opts.envMap ? 0.85 : 0,
   })
+
+  if (printed) maskPrintOutsideImage(outer)
 
   const finish = opts.finish
   const maps = opts.finishMaps
@@ -85,6 +87,28 @@ export const createPanelMaterials = (opts: {
       edge.dispose()
     },
   }
+}
+
+/**
+ * Baskı görseli yalnızca kendi dikdörtgeninde (UV 0..1) görünür; dışında karton rengi kalır.
+ * ClampToEdge tek başına kenar piksellerini tüm kutuya yayardı. Saydam PNG'ler de
+ * kartonun üstüne alfa ile karışır (çarpma yerine).
+ */
+const maskPrintOutsideImage = (material: THREE.MeshPhysicalMaterial) => {
+  material.onBeforeCompile = (shader) => {
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        '#include <map_fragment>',
+        `float printInside = 1.0;
+#ifdef USE_MAP
+  vec4 sampledDiffuseColor = texture2D( map, vMapUv );
+  printInside = step( 0.0, vMapUv.x ) * step( vMapUv.x, 1.0 ) * step( 0.0, vMapUv.y ) * step( vMapUv.y, 1.0 );
+  diffuseColor.rgb = mix( diffuseColor.rgb, sampledDiffuseColor.rgb, sampledDiffuseColor.a * printInside );
+#endif`,
+      )
+      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n  totalEmissiveRadiance *= printInside;')
+  }
+  material.customProgramCacheKey = () => 'diecut-print-mask'
 }
 
 export const materialsForMesh = (set: PanelMaterialSet): THREE.Material[] => [set.outer, set.inner, set.edge]

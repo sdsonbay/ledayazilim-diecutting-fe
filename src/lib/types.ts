@@ -142,10 +142,18 @@ export interface CatalogBranch {
 }
 
 export interface PrintTransform {
+  /** 1 = bıçak izine sığdırılmış boy. */
   scale: number
+  /** Merkezden kaydırma (mm, y yukarı). */
   offsetX: number
   offsetY: number
+  /** Derece, saat yönünde. */
   rotation: number
+  /**
+   * Görselin en/boy oranı. Varsa görsel oranı korunarak bıçak izinin içine sığdırılır;
+   * yoksa (eski kayıtlar) bıçak izi sınırlarına gerilir.
+   */
+  aspect?: number
 }
 
 export interface PrintFinish {

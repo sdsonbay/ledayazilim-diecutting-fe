@@ -13,5 +13,6 @@ FROM nginxinc/nginx-unprivileged:1.29-alpine
 ENV API_PROXY_PASS=http://leda-diecutting-api:8080/api/
 # nginx imajı /etc/nginx/templates/*.template dosyalarını başlangıçta envsubst ile işler.
 COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template
+COPY nginx/security-headers.conf /etc/nginx/snippets/security-headers.conf
 COPY --from=build /app/dist /usr/share/nginx/html
 EXPOSE 8080

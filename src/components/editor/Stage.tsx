@@ -14,6 +14,7 @@ import { exportFoldGlb } from '../../fold/exportGlb'
 import type { Substrate } from '../../fold/foldMaterials'
 import type { FoldStep } from '../../fold/foldModel'
 import { saveFile } from '../../lib/saveFile'
+import { storage } from '../../lib/storage'
 import { useUnit } from '../../lib/units'
 import { shareImage } from '../../lib/shareImage'
 import { FoldControls } from '../fold/FoldControls'
@@ -35,12 +36,14 @@ export interface StageProps {
   /** Sahneyi çevreleyen kartın stili (yükseklik vb.). */
   style?: object
   empty?: React.ReactNode
+  /** Verilirse 2D'de baskı tuval üzerinde düzenlenir. */
+  onPrintChange?: (next: PrintTransform) => void
   /** 3D'de başlangıç malzemesi (oluklu şablonlar için oluklu mukavva). */
   defaultSubstrate?: Substrate
 }
 
 /** Bıçak izi sahnesi: 2D / 3D / tabaka; üstte mod ve indirme, altta ölçüler ve katlama. */
-export const Stage = ({ dieline, mode, onMode, busy, printUri, printTransform, printFinish, impose, onExport, style, empty, defaultSubstrate = 'white' }: StageProps) => {
+export const Stage = ({ dieline, mode, onMode, busy, printUri, printTransform, printFinish, impose, onExport, style, empty, defaultSubstrate = 'white', onPrintChange }: StageProps) => {
   const { colors } = useTheme()
   const { t } = useI18n()
   const { loggedIn } = useAuth()
@@ -53,6 +56,11 @@ export const Stage = ({ dieline, mode, onMode, busy, printUri, printTransform, p
   const [steps, setSteps] = useState<FoldStep[]>([])
   const [substrate, setSubstrate] = useState<Substrate>(defaultSubstrate)
   const [light, setLight] = useState(1.1)
+  const [autoRotate, setAutoRotateState] = useState(() => storage.get('diecut.autoRotate') !== '0')
+  const setAutoRotate = (v: boolean) => {
+    setAutoRotateState(v)
+    storage.set('diecut.autoRotate', v ? null : '0')
+  }
   const capture = useRef<FoldCapture | null>(null)
   const onSteps = useCallback((next: FoldStep[]) => setSteps(next), [])
   const onProgress = useCallback((v: number) => setProgress(v), [])
@@ -113,7 +121,21 @@ export const Stage = ({ dieline, mode, onMode, busy, printUri, printTransform, p
           )
         ) : mode === '2d' ? (
           <Animated.View key="2d" entering={FadeIn.duration(220)} exiting={FadeOut.duration(120)} style={StyleSheet.absoluteFill}>
-            <DielineCanvas dieline={dieline} printUri={printUri} printTransform={printTransform} formatLength={showDims ? units.format : undefined} />
+            <DielineCanvas
+              dieline={dieline}
+              printUri={printUri}
+              printTransform={printTransform}
+              formatLength={showDims ? units.format : undefined}
+              onPrintChange={onPrintChange}
+            />
+            {onPrintChange && printUri ? (
+              <View pointerEvents="none" style={[styles.hint, { backgroundColor: colors.glass }]}>
+                <Icon name="move" size={12} color={colors.inkSoft} />
+                <Text variant="small" tone="soft" numberOfLines={1}>
+                  {t('editor.printCanvasShort')}
+                </Text>
+              </View>
+            ) : null}
           </Animated.View>
         ) : mode === '3d' ? (
           showFold ? (
@@ -131,6 +153,8 @@ export const Stage = ({ dieline, mode, onMode, busy, printUri, printTransform, p
                 printUri={printUri}
                 printTransform={printTransform}
                 printFinish={printFinish}
+                autoRotate={autoRotate}
+                viewControls
               />
             </Animated.View>
           ) : (
@@ -182,6 +206,8 @@ export const Stage = ({ dieline, mode, onMode, busy, printUri, printTransform, p
             onSubstrate={setSubstrate}
             light={light}
             onLight={setLight}
+            autoRotate={autoRotate}
+            onAutoRotate={setAutoRotate}
             onSnapshot={() => void snapshot()}
             onGlb={Platform.OS === 'web' ? () => void glb() : undefined}
           />
@@ -237,5 +263,17 @@ const styles = StyleSheet.create({
   },
   footer: { borderTopWidth: StyleSheet.hairlineWidth * 2, paddingHorizontal: 14, paddingVertical: 10, minHeight: 48, justifyContent: 'center' },
   stats: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', columnGap: 16, rowGap: 6 },
+  hint: {
+    position: 'absolute',
+    bottom: 10,
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: radius.pill,
+    maxWidth: '92%',
+  },
   dimToggle: { flexDirection: 'row', alignItems: 'center', gap: 4, marginLeft: 'auto' },
 })

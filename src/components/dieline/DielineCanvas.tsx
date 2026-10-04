@@ -1,11 +1,12 @@
 import { memo, useMemo } from 'react'
 import { StyleSheet, View } from 'react-native'
 import Svg, { ClipPath, Defs, G, Image as SvgImage, Line, Path, Pattern, Rect, Text as SvgText } from 'react-native-svg'
-import { SVG_MARGIN_MM, printImageSvgTransform } from '../../lib/printMap'
+import { SVG_MARGIN_MM, printImageSvgRect, printImageSvgTransform } from '../../lib/printMap'
 import type { DielineResponse, PathCommand, Point, PrintTransform } from '../../lib/types'
 import { useTheme } from '../../theme/ThemeContext'
 import { fonts } from '../../theme/tokens'
 import { Text } from '../ui/Text'
+import { PrintEditLayer } from './PrintEditLayer'
 import { ZoomSurface, type ViewBox } from './ZoomSurface'
 
 const commandsToD = (commands: PathCommand[]): string => {
@@ -52,6 +53,7 @@ export const DielineCanvas = memo(function DielineCanvas({
   showPanels = true,
   interactive = true,
   formatLength,
+  onPrintChange,
 }: {
   dieline: DielineResponse
   printUri?: string | null
@@ -60,6 +62,8 @@ export const DielineCanvas = memo(function DielineCanvas({
   interactive?: boolean
   /** Verilirse otomatik ölçü çizgileri (toplam en/boy + panel genişlikleri) çizilir. */
   formatLength?: (mm: number) => string
+  /** Verilirse baskı tuval üzerinde taşınır / boyutlandırılır / döndürülür. */
+  onPrintChange?: (next: PrintTransform) => void
 }) {
   const { colors } = useTheme()
   const { bounds } = dieline
@@ -185,9 +189,11 @@ export const DielineCanvas = memo(function DielineCanvas({
     )
   }
 
+  const editing = Boolean(onPrintChange && printUri && printTransform)
+
   const draw = (view: ViewBox, size: { width: number; height: number }) => {
     const upp = view.w / size.width // piksel başına birim
-    return (
+    const svg = (
       <Svg width={size.width} height={size.height} viewBox={`${view.x} ${view.y} ${view.w} ${view.h}`} preserveAspectRatio="xMidYMid meet">
         <Defs>
           <ClipPath id="dl-panels">
@@ -208,17 +214,13 @@ export const DielineCanvas = memo(function DielineCanvas({
             ))}
           </G>
         ) : null}
+        {printUri && printTransform && editing ? (
+          // Düzenlerken bıçak izi dışına taşan kısım soluk görünür.
+          <SvgImage href={printUri} {...printImageSvgRect(bounds, printTransform)} preserveAspectRatio="none" opacity={0.28} transform={printImageSvgTransform(bounds, printTransform)} />
+        ) : null}
         {printUri && printTransform ? (
           <G clipPath="url(#dl-panels)">
-            <SvgImage
-              href={printUri}
-              x={m}
-              y={m}
-              width={bounds.width}
-              height={bounds.height}
-              preserveAspectRatio="none"
-              transform={printImageSvgTransform(bounds, printTransform)}
-            />
+            <SvgImage href={printUri} {...printImageSvgRect(bounds, printTransform)} preserveAspectRatio="none" transform={printImageSvgTransform(bounds, printTransform)} />
           </G>
         ) : null}
         {formatLength ? renderDimensions(upp) : null}
@@ -245,10 +247,17 @@ export const DielineCanvas = memo(function DielineCanvas({
         </G>
       </Svg>
     )
+    if (!editing || !onPrintChange || !printTransform) return svg
+    return (
+      <>
+        {svg}
+        <PrintEditLayer view={view} size={size} bounds={bounds} transform={printTransform} onChange={onPrintChange} />
+      </>
+    )
   }
 
   return (
-    <ZoomSurface content={content} resetKey={dieline.templateId} interactive={interactive}>
+    <ZoomSurface content={content} resetKey={dieline.templateId} interactive={interactive} gestures={!editing}>
       {draw}
     </ZoomSurface>
   )

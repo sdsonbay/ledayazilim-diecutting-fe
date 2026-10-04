@@ -16,6 +16,8 @@ export default function CreditsScreen() {
   const { loggedIn, session, refresh } = useAuth()
   const { toast } = useFeedback()
   const packs = useQuery({ queryKey: ['credit-packages'], queryFn: api.creditPackages })
+  // Gerçek ödeme bağlanana kadar prod'da satın alma kapalı (API provider: 'none').
+  const purchasable = packs.data?.provider !== 'none'
   const buy = useMutation({
     mutationFn: api.purchaseCredits,
     onSuccess: async (result) => {
@@ -85,7 +87,8 @@ export default function CreditsScreen() {
                         {t('credits.price', { n: pack.priceTry })} · {t('credits.unit', { n: (pack.priceTry / pack.credits).toFixed(2) })}
                       </Text>
                       <Button
-                        label={buy.isPending && buy.variables === pack.id ? t('credits.buying') : t('credits.buy')}
+                        disabled={!purchasable}
+                        label={!purchasable ? t('credits.soon') : buy.isPending && buy.variables === pack.id ? t('credits.buying') : t('credits.buy')}
                         variant={popular ? 'accent' : 'primary'}
                         full
                         loading={buy.isPending && buy.variables === pack.id}
@@ -97,7 +100,7 @@ export default function CreditsScreen() {
                 })}
           </View>
           <Text variant="small" tone="muted" style={{ marginTop: 20 }}>
-            {t('credits.mockNote')}
+            {purchasable ? t('credits.mockNote') : t('credits.soonNote')}
           </Text>
         </>
       )}

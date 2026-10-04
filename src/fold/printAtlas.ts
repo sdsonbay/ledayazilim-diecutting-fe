@@ -1,3 +1,4 @@
+import { printBaseSize } from '../lib/printMap'
 import type { DielineResponse, PrintTransform } from '../lib/types'
 import type { FoldMeshData } from './foldModel'
 
@@ -10,8 +11,9 @@ export const dielineUvFromPosition = (
 ): [number, number] => {
   const cx = bounds.x + bounds.width / 2
   const cy = bounds.y + bounds.height / 2
-  const bw = Math.max(bounds.width, 1e-6)
-  const bh = Math.max(bounds.height, 1e-6)
+  const base = printBaseSize(bounds, transform)
+  const bw = base.width
+  const bh = base.height
   const scale = Math.max(transform.scale, 0.05)
   const rad = (-transform.rotation * Math.PI) / 180
   const cos = Math.cos(rad)

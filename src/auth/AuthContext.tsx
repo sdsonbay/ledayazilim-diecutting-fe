@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { api, setToken } from '../lib/api'
+import { api, getToken, setToken } from '../lib/api'
 import type { Session } from '../lib/types'
 
 interface AuthValue {
@@ -25,13 +25,19 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
   const refresh = useCallback(async () => {
     try {
-      setSession(await api.session())
+      const next = await api.session()
+      // Süresi dolmuş / geçersiz token: sunucu misafir döndürür; cihazdaki token'ı da bırak.
+      if (!next.user && getToken()) {
+        setToken(null)
+        queryClient.removeQueries({ queryKey: ['me'] })
+      }
+      setSession(next)
     } catch {
       setSession((current) => current ?? emptyGuest())
     } finally {
       setReady(true)
     }
-  }, [])
+  }, [queryClient])
 
   useEffect(() => {
     // Açılışta oturumu sunucudan al (state güncellemesi istek bitince, asenkron).
