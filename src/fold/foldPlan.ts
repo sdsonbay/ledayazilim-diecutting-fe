@@ -71,16 +71,44 @@ const signedFoldAngle = (axis: [Point, Point], childOutline: Point[], angle: num
   return cross < 0 ? mag : -mag
 }
 
-const closedAngle = (role: string, angle: number): number => {
+/** Kapalı açı; kapağa bağlı dilin yuvaya giriş eğimi çözücüde aday olarak denenir. */
+const closedAngle = (angle: number): number => {
   const mag = Math.abs(angle)
   if (mag < 1e-6) return 0
-  const sign = angle < 0 ? -1 : 1
-  // Kilit dilleri yuvaya girerken tam dik değil.
-  if (role === 'lock') return sign * Math.min(mag, 88)
-  return sign * Math.min(mag, 180)
+  return (angle < 0 ? -1 : 1) * Math.min(mag, 180)
 }
 
 const BODY = new Set(['wall', 'bottom'])
+
+/** Duvarın içine ~180° katlanan iç kat (çift cidarlı kutular). */
+const isLiner = (childRole: string, parentRole: string | undefined, angle: number): boolean =>
+  BODY.has(childRole) && parentRole !== undefined && BODY.has(parentRole) && Math.abs(angle) >= 150
+
+/** Panel → montaj (en yakın 'lid' atası; yoksa ''). Teleskop kapağın duvarları ve kulakları ayrı montajdır. */
+const assembliesOf = (dieline: DielineResponse, joints: PlanJoint[]): Map<string, string> => {
+  const role = new Map(dieline.panels.map((p) => [p.id, p.role]))
+  const parentOf = new Map(joints.map((j) => [j.childId, j.parentId]))
+  const out = new Map<string, string>()
+  for (const p of dieline.panels) {
+    let a = ''
+    for (let id: string | undefined = p.id; id; id = parentOf.get(id)) {
+      if (role.get(id) === 'lid') {
+        a = id
+        break
+      }
+    }
+    out.set(p.id, a)
+  }
+  return out
+}
+
+/** Panel → iç/dış sıralama rolü. */
+const effectiveRoles = (dieline: DielineResponse, joints: PlanJoint[]): Map<string, string> => {
+  const role = new Map(dieline.panels.map((p) => [p.id, p.role]))
+  const out = new Map(role)
+  for (const j of joints) if (isLiner(role.get(j.childId) ?? '', role.get(j.parentId), j.angle)) out.set(j.childId, 'liner')
+  return out
+}
 
 const ROLE_STAGE: Record<string, number> = {
   wall: 0,
@@ -90,7 +118,9 @@ const ROLE_STAGE: Record<string, number> = {
   dust: 1,
   lid: 2,
   flap: 2,
-  lock: 2.6,
+  // Gövdeye bağlı iç kanat/dil (ör. yapıştırmalı uçta iç kanat) dış kapaktan önce kapanır;
+  // kapağa bağlı dil zaten kapaktan sonra gelir (ebeveyn + 0.5).
+  lock: 1.5,
 }
 
 const SIDE_SPAN = 2.4
@@ -167,6 +197,10 @@ const samplePanel = (panel: Panel, thickness: number): THREE.Vector3[] => {
 
 interface Placed {
   panel: Panel
+  /** İç/dış sıralamasında kullanılan rol (astar duvarı için 'liner'). */
+  role: string
+  /** Bağlı olduğu montaj: en yakın 'lid' atası (teleskop kapak) ya da gövde. */
+  assembly: string
   world: THREE.Matrix4
   inverse: THREE.Matrix4
   samples: THREE.Vector3[]
@@ -192,6 +226,12 @@ export interface FoldPlan {
   /** Kapalı pozda çözülemeyen çakışma sayısı (0 beklenir). */
   residual: number
 }
+
+/**
+ * Denenecek katmanlar: yakından uzağa, iki yönde. Hangi yönün "içeri" olduğunu kırım açısı belirler
+ * (90° ve 180° kırımlarda işaret farklı), bu yüzden yön seçimini iç/dış sıralama kuralı yapar.
+ */
+const LAYERS = [0, -1, 1, -2, 2, -3, 3, -4, 4, -5, 5, -6, 6]
 
 export function planFold(dieline: DielineResponse, thickness: number): FoldPlan {
   const panels = new Map(dieline.panels.map((p) => [p.id, p]))
@@ -230,7 +270,7 @@ export function planFold(dieline: DielineResponse, thickness: number): FoldPlan 
       if (inward.lengthSq() < 1e-8) inward.set(0, 0, 1)
       inward.normalize()
       const oriented = signedFoldAngle(f.axis, child.outline, f.angle)
-      const angle = closedAngle(child.role, f.reverse ? -oriented : oriented)
+      const angle = closedAngle(f.reverse ? -oriented : oriented)
 
       // Yön: küçük bir dönüşte çocuğun merkezi aşağı mı iniyor?
       const mid = a.clone().setY(thickness / 2)
@@ -242,7 +282,9 @@ export function planFold(dieline: DielineResponse, thickness: number): FoldPlan 
       const side = closure ? (centroid2d(child.outline).y < rootC.y ? 0 : SIDE_SPAN) : 0
       const base = (ROLE_STAGE[child.role] ?? 1) + side
       const parentIsBody = parent ? BODY.has(parent.role) : true
-      const stage = Math.max(base, parentStage < 0 ? base : parentStage + (parentIsBody ? 0 : 0.5))
+      // Astar duvar (duvarın içine 180° dönen iç kat) köşe kanatlarından sonra kapanır: onları sıkıştırır.
+      const liner = isLiner(child.role, parent?.role, angle)
+      const stage = Math.max(liner ? 0.5 : base, parentStage < 0 ? base : parentStage + (parentIsBody ? 0 : 0.5))
 
       joints.push({
         id: f.id,
@@ -316,38 +358,64 @@ export function planFold(dieline: DielineResponse, thickness: number): FoldPlan 
     return s
   }
 
+  const roles = effectiveRoles(dieline, joints)
+  const assemblies = assembliesOf(dieline, joints)
   const placed: Placed[] = []
   if (root) {
     const w = worldOf(root.id)
-    placed.push({ panel: root, world: w, inverse: w.clone().invert(), samples: samplesOf(root) })
+    placed.push({ panel: root, role: roles.get(root.id) ?? root.role, assembly: assemblies.get(root.id) ?? '', world: w, inverse: w.clone().invert(), samples: samplesOf(root) })
   }
   const order = [...joints].sort((x, y) => x.stage - y.stage || (depthOf.get(x.childId) ?? 0) - (depthOf.get(y.childId) ?? 0))
+  // Gövde merkezi (iç/dış yönü için); gövde katlanması katmansız hesaplanır.
+  const centers = bodyCenters(dieline, worldOf, thickness)
+  const boxes = bodyBoxes(dieline, worldOf, thickness)
   let residual = 0
   for (const j of order) {
     const panel = panels.get(j.childId)
     if (!panel) continue
     const others = placed.filter((p) => p.panel.id !== j.parentId)
-    let best = { layer: 0, hits: Infinity }
-    for (let layer = 0; layer <= 4; layer += 1) {
-      j.layer = layer
-      worldCache.delete(panel.id)
-      const w = worldOf(panel.id)
-      const inv = w.clone().invert()
-      const me: Placed = { panel, world: w, inverse: inv, samples: samplesOf(panel) }
-      let hits = 0
-      for (const other of others) {
-        hits += penetrates(me.samples, w, other, thickness)
-        hits += penetrates(other.samples, other.world, me, thickness)
-        if (hits > best.hits) break
+    let best = { layer: 0, angle: j.angle, score: Infinity }
+    const role = roles.get(panel.id) ?? panel.role
+    // Kapağa bağlı dil eğimli (konik) duvarın içine dik giremez: duvarı izleyecek kadar daha az kapanır.
+    const parentRole = panels.get(j.parentId)?.role
+    const sign = j.angle < 0 ? -1 : 1
+    // Gövde dışı ve 90°'yi aşan kapanış (ör. taç kapak yaprakları) sıkışırsa düzleşerek üste biner.
+    const mag = Math.abs(j.angle)
+    const angles =
+      role === 'lock' && !(parentRole && BODY.has(parentRole)) && mag > 1
+        ? [0, 2, 8, 18, 28, 43].map((d) => sign * Math.max(5, mag - d))
+        : !BODY.has(panel.role) && mag > 90.5
+          ? [mag, (mag + 90) / 2, 90].map((a) => sign * a)
+          : [j.angle]
+    search: for (const angle of angles) {
+      j.angle = angle
+      for (const layer of LAYERS) {
+        j.layer = layer
+        worldCache.delete(panel.id)
+        const w = worldOf(panel.id)
+        const me: Placed = { panel, role, assembly: assemblies.get(panel.id) ?? '', world: w, inverse: w.clone().invert(), samples: samplesOf(panel) }
+        // Çakışma ve yanlış iç/dış sırası birlikte puanlanır; sıra hatası çakışmadan ağır.
+        // İç parça (yapıştırma, dil, dudak, toz kapağı) gövdenin dışına taşamaz.
+        const box = boxes.get(panel.id)
+        const inner = (rankOf(role) ?? 2) < 2
+        let score = inner && box && protrusion(panel, w, box, thickness) > thickness * 6 + 0.5 ? 100 : 0
+        for (const other of others) {
+          score += penetrates(me.samples, w, other, thickness) + penetrates(other.samples, other.world, me, thickness)
+          // İç/dış sırası yalnız aynı parçadaki paneller arasında.
+          const center = centers.get(other.panel.id)
+          if (center && centers.get(panel.id)?.equals(center) && (orderViolated(me, other, center, thickness) || orderViolated(other, me, center, thickness))) score += 100
+          if (score >= best.score) break
+        }
+        if (score < best.score) best = { layer, angle, score }
+        if (score === 0) break search
       }
-      if (hits < best.hits) best = { layer, hits }
-      if (hits === 0) break
     }
+    j.angle = best.angle
     j.layer = best.layer
     worldCache.delete(panel.id)
     const w = worldOf(panel.id)
-    placed.push({ panel, world: w, inverse: w.clone().invert(), samples: samplesOf(panel) })
-    if (best.hits > 0) residual += 1
+    placed.push({ panel, role, assembly: assemblies.get(panel.id) ?? '', world: w, inverse: w.clone().invert(), samples: samplesOf(panel) })
+    if (best.score > 0) residual += 1
   }
 
   return { joints, steps, residual }
@@ -355,6 +423,11 @@ export function planFold(dieline: DielineResponse, thickness: number): FoldPlan 
 
 /** Kapalı pozdaki çakışan panel çifti sayısı (test / teşhis). */
 export function countCollisions(dieline: DielineResponse, thickness: number, joints: PlanJoint[]): number {
+  return collisionPairs(dieline, thickness, joints).length
+}
+
+/** Kapalı pozda iç içe geçen panel çiftleri. */
+export function collisionPairs(dieline: DielineResponse, thickness: number, joints: PlanJoint[]): { a: string; b: string }[] {
   const panels = new Map(dieline.panels.map((p) => [p.id, p]))
   const jointOfChild = new Map(joints.map((j) => [j.childId, j]))
   const cache = new Map<string, THREE.Matrix4>()
@@ -366,11 +439,13 @@ export function countCollisions(dieline: DielineResponse, thickness: number, joi
     cache.set(id, m)
     return m
   }
+  const roles = effectiveRoles(dieline, joints)
+  const assemblies = assembliesOf(dieline, joints)
   const list: Placed[] = dieline.panels.map((p) => {
     const w = worldOf(p.id)
-    return { panel: p, world: w, inverse: w.clone().invert(), samples: samplePanel(p, thickness) }
+    return { panel: p, role: roles.get(p.id) ?? p.role, assembly: assemblies.get(p.id) ?? '', world: w, inverse: w.clone().invert(), samples: samplePanel(p, thickness) }
   })
-  let pairs = 0
+  const pairs: { a: string; b: string }[] = []
   for (let i = 0; i < list.length; i += 1) {
     for (let k = i + 1; k < list.length; k += 1) {
       const a = list[i]!
@@ -378,7 +453,7 @@ export function countCollisions(dieline: DielineResponse, thickness: number, joi
       const ja = jointOfChild.get(a.panel.id)
       const jb = jointOfChild.get(b.panel.id)
       if (ja?.parentId === b.panel.id || jb?.parentId === a.panel.id) continue
-      if (penetrates(a.samples, a.world, b, thickness) + penetrates(b.samples, b.world, a, thickness) > 0) pairs += 1
+      if (penetrates(a.samples, a.world, b, thickness) + penetrates(b.samples, b.world, a, thickness) > 0) pairs.push({ a: a.panel.id, b: b.panel.id })
     }
   }
   void panels
@@ -397,14 +472,199 @@ export function countInsideOut(dieline: DielineResponse, thickness: number, join
     cache.set(id, m)
     return m
   }
-  const walls = dieline.panels.filter((p) => p.printable && BODY.has(p.role))
-  const centers = walls.map((p) => toV(centroid2d(p.outline), thickness / 2).applyMatrix4(worldOf(p.id)))
-  const middle = centers.reduce((a, c) => a.add(c), new THREE.Vector3()).multiplyScalar(1 / Math.max(1, centers.length))
+  const middles = bodyCenters(dieline, worldOf, thickness)
+  // Astar (içe dönen iç kat) baskılı yüzüyle kutunun içine bakar: hata değil.
+  const roles = effectiveRoles(dieline, joints)
   let bad = 0
-  walls.forEach((p, i) => {
+  for (const p of dieline.panels) {
+    const middle = middles.get(p.id)
+    if (!p.printable || !BODY.has(p.role) || roles.get(p.id) === 'liner' || !middle) continue
     const normal = new THREE.Vector3(0, 1, 0).transformDirection(worldOf(p.id))
-    const out = centers[i]!.clone().sub(middle)
+    const out = toV(centroid2d(p.outline), thickness / 2).applyMatrix4(worldOf(p.id)).sub(middle)
     if (out.lengthSq() > 1e-6 && normal.dot(out) < 0) bad += 1
-  })
+  }
   return bad
+}
+
+// ───────────────────────── iç / dış sıralama
+
+/**
+ * Üst üste binen (paralel, aynı düzleme yakın) iki parçadan hangisinin kutunun içinde kalacağı:
+ * küçük sıra içeride. Yapıştırma payı, kilit/dil ve köşe körüğü duvarın içine; toz kapağı kapağın
+ * altına; kapak (flap/lid) en dışa.
+ */
+const INSIDE_RANK: Record<string, number> = { dust: 0, liner: 0.5, glue: 1, lock: 1, gusset: 1, wall: 2, bottom: 2, flap: 3, lid: 3 }
+export const rankOf = (role: string): number | undefined => INSIDE_RANK[role]
+
+/**
+ * Aynı tabakadaki ayrı parçalar (ör. kapak + taban, çekmece + kılıf) 0° kırımla bağlanır:
+ * her parçanın kendi "kutu merkezi" vardır.
+ */
+const piecesOf = (dieline: DielineResponse): Map<string, string> => {
+  const parent = new Map(dieline.panels.map((p) => [p.id, p.id]))
+  const find = (x: string): string => {
+    let r = x
+    while (parent.get(r) !== r) r = parent.get(r)!
+    parent.set(x, r)
+    return r
+  }
+  for (const f of dieline.folds) {
+    if (Math.abs(f.angle) < 1e-6 || !parent.has(f.parent) || !parent.has(f.child)) continue
+    parent.set(find(f.child), find(f.parent))
+  }
+  return new Map(dieline.panels.map((p) => [p.id, find(p.id)]))
+}
+
+/** Kapalı pozda her parçanın gövde (duvar + taban) sınır kutusu — panel kimliğine göre. */
+const bodyBoxes = (dieline: DielineResponse, worldOf: (id: string) => THREE.Matrix4, thickness: number): Map<string, THREE.Box3> => {
+  const pieces = piecesOf(dieline)
+  const boxes = new Map<string, THREE.Box3>()
+  for (const p of dieline.panels) {
+    if (!BODY.has(p.role)) continue
+    const key = pieces.get(p.id)!
+    const box = boxes.get(key) ?? new THREE.Box3()
+    for (const q of p.outline) box.expandByPoint(toV(q, thickness / 2).applyMatrix4(worldOf(p.id)))
+    boxes.set(key, box)
+  }
+  const out = new Map<string, THREE.Box3>()
+  for (const p of dieline.panels) {
+    const box = boxes.get(pieces.get(p.id)!)
+    if (box && !box.isEmpty()) out.set(p.id, box)
+  }
+  return out
+}
+
+/** Panelin kapalı pozda gövde kutusunun dışına en çok ne kadar taştığı (mm). */
+const protrusion = (panel: Panel, world: THREE.Matrix4, box: THREE.Box3, thickness: number): number => {
+  let by = 0
+  const v = new THREE.Vector3()
+  for (const q of panel.outline) {
+    v.copy(toV(q, thickness / 2)).applyMatrix4(world)
+    by = Math.max(by, box.min.x - v.x, v.x - box.max.x, box.min.y - v.y, v.y - box.max.y, box.min.z - v.z, v.z - box.max.z)
+  }
+  return by
+}
+
+/** Kapalı pozda her parçanın gövde (duvar + taban) ağırlık merkezi — panel kimliğine göre. */
+const bodyCenters = (dieline: DielineResponse, worldOf: (id: string) => THREE.Matrix4, thickness: number): Map<string, THREE.Vector3> => {
+  const pieces = piecesOf(dieline)
+  const sums = new Map<string, { c: THREE.Vector3; n: number }>()
+  for (const p of dieline.panels) {
+    if (!BODY.has(p.role)) continue
+    const key = pieces.get(p.id)!
+    const s = sums.get(key) ?? { c: new THREE.Vector3(), n: 0 }
+    s.c.add(toV(centroid2d(p.outline), thickness / 2).applyMatrix4(worldOf(p.id)))
+    s.n += 1
+    sums.set(key, s)
+  }
+  const out = new Map<string, THREE.Vector3>()
+  for (const p of dieline.panels) {
+    const s = sums.get(pieces.get(p.id)!)
+    if (s && s.n >= 2) out.set(p.id, s.c.clone().multiplyScalar(1 / s.n))
+  }
+  return out
+}
+
+const normalOf = (world: THREE.Matrix4) => new THREE.Vector3(0, 1, 0).transformDirection(world)
+
+/**
+ * `a`, `b` ile üst üste biniyorsa sıralamanın doğru olup olmadığını döndürür
+ * (true = ihlal). Binmiyorsa / kural yoksa false.
+ */
+const orderViolated = (a: Placed, b: Placed, center: THREE.Vector3, thickness: number): boolean => {
+  const ra = rankOf(a.role)
+  const rb = rankOf(b.role)
+  if (ra === undefined || rb === undefined || ra === rb) return false
+  // Yapıştırma kulağı / körük yalnız kendi montajının duvarına göre sıralanır (teleskop kapağın
+  // kulağı kapak duvarının içinde, tepsi duvarının dışında kalır). Dil, dudak, toz kapağı her duvara.
+  const glued = (r: string) => r === 'glue' || r === 'gusset'
+  if ((glued(a.role) || glued(b.role)) && a.assembly !== b.assembly) return false
+  const na = normalOf(a.world)
+  const nb = normalOf(b.world)
+  if (Math.abs(na.dot(nb)) < 0.95) return false
+  // a'nın b ile çakışan örnekleri (b'nin düzlemine yakın, b'nin konturu içinde).
+  const v = new THREE.Vector3()
+  const near: THREE.Vector3[] = []
+  for (const p of a.samples) {
+    const w = p.clone().applyMatrix4(a.world)
+    v.copy(w).applyMatrix4(b.inverse)
+    if (Math.abs(v.y - thickness / 2) < Math.max(thickness * 6, 6) && pointInPolygon(v.x, -v.z, b.panel.outline)) near.push(w)
+  }
+  if (near.length < 2) return false
+  const cb = toV(centroid2d(b.panel.outline), thickness / 2).applyMatrix4(b.world)
+  const out = nb.clone()
+  const side = cb.clone().sub(center).dot(out)
+  if (Math.abs(side) < thickness) return false
+  if (side < 0) out.negate()
+  const ca = near.reduce((s, p) => s.add(p), new THREE.Vector3()).multiplyScalar(1 / near.length)
+  const d = ca.sub(cb).dot(out)
+  return ra < rb ? d > 0 : d < 0
+}
+
+/** Kapalı pozda iç/dış sıralaması yanlış olan üst üste binen parça çiftleri (0 beklenir). */
+export function orderViolations(dieline: DielineResponse, thickness: number, joints: PlanJoint[]): { a: string; b: string }[] {
+  const jointOfChild = new Map(joints.map((j) => [j.childId, j]))
+  const cache = new Map<string, THREE.Matrix4>()
+  const worldOf = (id: string): THREE.Matrix4 => {
+    const c = cache.get(id)
+    if (c) return c
+    const j = jointOfChild.get(id)
+    const m = j ? worldOf(j.parentId).clone().multiply(jointMatrix(j, thickness, 1)) : new THREE.Matrix4()
+    cache.set(id, m)
+    return m
+  }
+  const centers = bodyCenters(dieline, worldOf, thickness)
+  const roles = effectiveRoles(dieline, joints)
+  const assemblies = assembliesOf(dieline, joints)
+  const list: Placed[] = dieline.panels.map((p) => {
+    const w = worldOf(p.id)
+    return { panel: p, role: roles.get(p.id) ?? p.role, assembly: assemblies.get(p.id) ?? '', world: w, inverse: w.clone().invert(), samples: samplePanel(p, thickness) }
+  })
+  const bad: { a: string; b: string }[] = []
+  for (let i = 0; i < list.length; i += 1) {
+    for (let k = i + 1; k < list.length; k += 1) {
+      const a = list[i]!
+      const b = list[k]!
+      // Ebeveynine katlanan parçanın tarafını kırım yönü belirler (şablon verisi), çözücü değil.
+      if (jointOfChild.get(a.panel.id)?.parentId === b.panel.id || jointOfChild.get(b.panel.id)?.parentId === a.panel.id) continue
+      // Yalnız aynı parçadaki paneller sıralanır.
+      const center = centers.get(b.panel.id)
+      if (!center || !centers.get(a.panel.id)?.equals(center)) continue
+      if (orderViolated(a, b, center, thickness) || orderViolated(b, a, center, thickness)) bad.push({ a: a.panel.id, b: b.panel.id })
+    }
+  }
+  return bad
+}
+
+/**
+ * Kapalı pozda gövdenin (duvar + taban) sınır kutusunun dışına taşan gövde dışı paneller:
+ * yanlış yöne katlanmış kanat / dil. Düz devam eden (0°) askı kulağı gibi parçalar ve onların
+ * alt parçaları sayılmaz.
+ */
+export function outsideBody(dieline: DielineResponse, thickness: number, joints: PlanJoint[]): { id: string; by: number }[] {
+  const jointOfChild = new Map(joints.map((j) => [j.childId, j]))
+  const cache = new Map<string, THREE.Matrix4>()
+  const worldOf = (id: string): THREE.Matrix4 => {
+    const c = cache.get(id)
+    if (c) return c
+    const j = jointOfChild.get(id)
+    const m = j ? worldOf(j.parentId).clone().multiply(jointMatrix(j, thickness, 1)) : new THREE.Matrix4()
+    cache.set(id, m)
+    return m
+  }
+  const boxes = bodyBoxes(dieline, worldOf, thickness)
+  const flat = (id: string): boolean => {
+    for (let j = jointOfChild.get(id); j; j = jointOfChild.get(j.parentId)) if (Math.abs(j.angle) < 1e-6) return true
+    return false
+  }
+  const out: { id: string; by: number }[] = []
+  const tol = thickness * 6 + 0.5
+  for (const p of dieline.panels) {
+    if (BODY.has(p.role) || flat(p.id)) continue
+    const box = boxes.get(p.id)
+    if (!box) continue
+    const by = protrusion(p, worldOf(p.id), box, thickness)
+    if (by > tol) out.push({ id: p.id, by: Math.round(by * 10) / 10 })
+  }
+  return out
 }

@@ -3,7 +3,8 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { countCollisions, countInsideOut, jointProgress, planFold } from './foldPlan.ts'
+import * as THREE from 'three'
+import { countCollisions, countInsideOut, jointMatrix, jointProgress, orderViolations, outsideBody, planFold, toV } from './foldPlan.ts'
 
 const dir = join(dirname(fileURLToPath(import.meta.url)), 'fixtures')
 const fixtures = readdirSync(dir).filter((f) => f.endsWith('.json'))
@@ -23,6 +24,18 @@ for (const file of fixtures) {
     const d = load(file)
     const t = thicknessOf(d)
     assert.equal(countInsideOut(d, t, planFold(d, t).joints), 0)
+  })
+
+  test(`${file}: iç/dış sırası doğru — yapıştırma payı, dil ve toz kapağı içeride, kapak dışarıda`, () => {
+    const d = load(file)
+    const t = thicknessOf(d)
+    assert.deepEqual(orderViolations(d, t, planFold(d, t).joints), [])
+  })
+
+  test(`${file}: kapanış parçaları gövdenin dışına taşmaz`, () => {
+    const d = load(file)
+    const t = thicknessOf(d)
+    assert.deepEqual(outsideBody(d, t, planFold(d, t).joints), [])
   })
 
   test(`${file}: montaj sırası gövdeyle başlar, pencereler [0,1] içinde`, () => {
@@ -52,4 +65,32 @@ test('kırım ilerlemesi penceresinde 0→1 yumuşak', () => {
   assert.equal(jointProgress(w, 0.1), 0)
   assert.equal(jointProgress(w, 0.7), 1)
   assert.ok(Math.abs(jointProgress(w, 0.4) - 0.5) < 1e-9)
+})
+
+/** Kapalı pozda panelin dünya dönüşümü. */
+const closedWorld = (joints: ReturnType<typeof planFold>['joints'], id: string, t: number) => {
+  const byChild = new Map(joints.map((j) => [j.childId, j]))
+  const chain = []
+  for (let j = byChild.get(id); j; j = byChild.get(j.parentId)) chain.unshift(j)
+  const m = new THREE.Matrix4()
+  for (const j of chain) m.multiply(jointMatrix(j, t, 1))
+  return m
+}
+
+test('ana sayfa kutusu (ECMA A20.20): yapıştırma payı ve kapak dilleri kutunun içinde', () => {
+  const d = load('ecma-a20-20.json')
+  const t = thicknessOf(d)
+  const plan = planFold(d, t)
+  type P = { id: string; outline: { x: number; y: number }[] }
+  const panel = (id: string) => d.panels.find((p: P) => p.id === id) as P
+  // Gövdenin sınır kutusu (duvar orta düzlemleri); iç parçaların merkezi bunun içinde kalmalı.
+  const box = new THREE.Box3()
+  for (const id of ['front', 'back', 'left', 'right']) for (const q of panel(id).outline) box.expandByPoint(toV(q, t / 2).applyMatrix4(closedWorld(plan.joints, id, t)))
+  for (const id of ['glue', 'top-tuck-tongue', 'bottom-tuck-tongue']) {
+    const o = panel(id).outline
+    const c = toV({ x: o.reduce((s, q) => s + q.x, 0) / o.length, y: o.reduce((s, q) => s + q.y, 0) / o.length }, t / 2).applyMatrix4(closedWorld(plan.joints, id, t))
+    assert.ok(box.containsPoint(c), `${id} kutunun dışında: ${c.toArray().map((v) => v.toFixed(1))}`)
+  }
+  // Kapak ile dil arasında kırım var (tek parça kapakta dil dışarıda kalırdı).
+  assert.ok(d.folds.some((f: { parent: string; child: string }) => f.parent === 'top-tuck' && f.child === 'top-tuck-tongue'))
 })
